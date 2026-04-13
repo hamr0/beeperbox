@@ -6,18 +6,20 @@ This is the long-form walkthrough. For a quick pitch, see the [README](../README
 
 1. [What it is](#what-it-is)
 2. [What you get at the end](#what-you-get-at-the-end)
-3. [Prerequisites](#prerequisites)
-4. [Install](#install)
-5. [First-run setup](#first-run-setup)
-6. [Create an access token](#create-an-access-token)
-7. [Verify the API works](#verify-the-api-works)
-8. [Use it — real examples](#use-it--real-examples)
-9. [Deploy to a VPS](#deploy-to-a-vps)
-10. [Operating it](#operating-it)
-11. [Upgrading](#upgrading)
-12. [Troubleshooting](#troubleshooting)
-13. [Security notes](#security-notes)
-14. [Limits and caveats](#limits-and-caveats)
+3. [**Quick setup (10 minutes, one-time)**](#quick-setup-10-minutes-one-time) ← start here
+4. [Prerequisites](#prerequisites)
+5. [Install](#install)
+6. [First-run setup](#first-run-setup)
+7. [Create an access token](#create-an-access-token)
+8. [Verify the API works](#verify-the-api-works)
+9. [Use it — real examples](#use-it--real-examples)
+10. [Deploy to a VPS](#deploy-to-a-vps)
+11. [Operating it](#operating-it)
+12. [Ports](#ports)
+13. [Upgrading](#upgrading)
+14. [Troubleshooting](#troubleshooting)
+15. [Security notes](#security-notes)
+16. [Limits and caveats](#limits-and-caveats)
 
 ---
 
@@ -88,6 +90,117 @@ You don't have to go through the bridge-pairing flow inside the container. **Bri
 3. All your existing bridges show up automatically — no QR codes, no re-pairing
 
 This means you can leave your phone as the "primary" Beeper client (where you do your normal pairing) and treat beeperbox as a read/write API replica. Both stay in sync because they're both talking to the same upstream Matrix homeserver.
+
+## Quick setup (10 minutes, one-time)
+
+This is the linear walkthrough from a clean machine to a working beeperbox + MCP server. Every step is mandatory, in order. After this, the rest of the guide is reference material you can dip into when you hit a specific question.
+
+You will need: Docker installed, a Beeper account, a web browser, and ~10 minutes of attention.
+
+### Step 1 — clone and build
+
+```sh
+git clone https://github.com/hamr0/beeperbox.git
+cd beeperbox
+docker compose up -d
+```
+
+First build takes ~2 minutes. When it finishes, the container is running but Beeper Desktop inside it has no login yet.
+
+### Step 2 — open noVNC in your browser
+
+```
+http://localhost:6080/vnc.html
+```
+
+Click **Connect**. You should see a Linux desktop with Beeper Desktop starting up. If the window is grey for the first 30 seconds, that's normal — Electron is slow to start.
+
+### Step 3 — log in to Beeper
+
+Inside the noVNC view, log in to Beeper Desktop with your Beeper account credentials (email code, etc.). When login completes, your chat list should appear.
+
+If you already have Beeper set up on your phone, **use the same credentials** — all your existing bridges (WhatsApp, Signal, etc.) will inherit automatically. No re-pairing.
+
+### Step 4 — enable the local API
+
+Inside Beeper Desktop: **Settings → Developers**
+
+Toggle on:
+- **Enable Beeper Desktop API**
+- **Start API on launch** ← critical, otherwise you must repeat this step after every container restart
+
+### Step 5 — create an access token
+
+Still in **Settings → Developers**, scroll to **Approved Connections** and click **+** to create a new connection.
+
+In the dialog:
+- **Name** — `beeperbox-mcp` (or anything memorable)
+- **Permissions** — **Allow sensitive actions** (the MCP server needs read + write)
+- **Expiry** — **Never** (unless you have a token-rotation policy)
+
+Click create. Beeper shows you a long random token string.
+
+### Step 6 — get the token out of noVNC
+
+noVNC clipboard sharing is unreliable. The fastest workaround: inside Beeper Desktop, **paste the token into your "Note to self" chat**. Then on your host machine, open Beeper on your phone (or any other Beeper client) and copy the token from there.
+
+### Step 7 — save the token to a `.env` file
+
+On your host machine, in the beeperbox directory:
+
+```sh
+printf 'BEEPER_TOKEN=PASTE-TOKEN-HERE\n' > .env
+```
+
+`.env` is in `.gitignore`, so it will not be committed accidentally.
+
+### Step 8 — recreate the container so it picks up the token
+
+```sh
+docker compose up -d
+```
+
+**Use `up -d`, not `restart`.** `restart` does not re-read environment variables. Only `up -d` recreates the container with the new env from your `.env` file.
+
+### Step 9 — verify everything is wired up
+
+```sh
+docker compose logs beeperbox 2>&1 | grep "beeper token"
+```
+
+You want to see:
+
+```
+[beeperbox-mcp] beeper token: set
+```
+
+If it says `NOT SET`, your `.env` file is in the wrong directory or has a typo. Re-check step 7.
+
+### Step 10 — test the MCP server end-to-end
+
+This is the moment of truth. Call the `list_inbox` tool through the MCP HTTP transport from your host:
+
+```sh
+curl -s -X POST http://localhost:23375 \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_inbox","arguments":{"limit":3}}}
+EOF
+```
+
+You should get back JSON with three of your most recently active chats, each carrying its `network` (whatsapp / telegram / discord / etc.), `title`, `last_message_at`, and `unread_count`. Note-to-self chats are filtered out automatically.
+
+If you see real chats: **you are done**. beeperbox is running, the MCP server is reachable, and any AI agent runtime that speaks MCP can now consume it.
+
+If you see an error, jump to [Troubleshooting](#troubleshooting).
+
+### What you can do next
+
+- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports HTTP transport can use `http://localhost:23375` as a tool source. Configure it once and the LLM will see all the beeperbox tools (currently `list_inbox`, more coming in v0.2.0+).
+- **Build something custom**: hit the raw Beeper API on `http://localhost:23373/v1/*` from any language with an HTTP client and your `BEEPER_TOKEN`. See [Use it — real examples](#use-it--real-examples) for curl / Node / Python snippets.
+- **Deploy to a VPS**: same steps work on any Linux box with Docker. SSH-tunnel noVNC for the one-time login. See [Deploy to a VPS](#deploy-to-a-vps).
+
+---
 
 ## Prerequisites
 
