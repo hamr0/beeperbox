@@ -198,7 +198,7 @@ If you see an error, jump to [Troubleshooting](#troubleshooting).
 
 ### What you can do next
 
-- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports HTTP transport can use `http://localhost:23375` as a tool source. Configure it once and the LLM will see all the beeperbox tools (currently `list_inbox`, more coming in v0.2.0+).
+- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports stdio or HTTP transport can consume beeperbox as a tool source. Configure it once and the LLM sees all 10 tools (`list_inbox`, `list_unread`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`, `send_message`, `note_to_self`, `react_to_message`, `archive_chat`). See the [MCP tools reference](#mcp-tools-reference) section below.
 - **Build something custom**: hit the raw Beeper API on `http://localhost:23373/v1/*` from any language with an HTTP client and your `BEEPER_TOKEN`. See [Use it — real examples](#use-it--real-examples) for curl / Node / Python snippets.
 - **Deploy to a VPS**: same steps work on any Linux box with Docker. SSH-tunnel noVNC for the one-time login. See [Deploy to a VPS](#deploy-to-a-vps).
 

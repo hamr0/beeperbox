@@ -4,10 +4,17 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Changed
+- README rewritten: removed internal architecture diagram, socat/noVNC implementation notes, persistent-data section, and verbose caveats — all of that moved to (or already lived in) `docs/GUIDE.md`. README now leads with a sharper "When to use and when not to" positioning: **if you only need Telegram, don't use this** (use a Telegram-first framework like openclaw); **if you need reach across 50+ messengers through one container, this is for you**. Status line bumped to v0.3.1, stale `:23374` example refs removed where they were presented as the default (the real default is `:23373`; `:23374` is only documented as the override for dev hosts that already run native Beeper Desktop). Roadmap trimmed: typed Node and Python clients dropped as next-in-line items with an honest explanation — MCP already covers language-agnostic consumption, and non-agent HTTP clients can hit the raw API in ~5 lines of vanilla `fetch` / `urllib` without an SDK. Revisit only if someone files an issue.
+- `docs/GUIDE.md` MCP tools reference stub that still said "currently list_inbox, more coming in v0.2.0+" updated to list all 10 live tools.
+- `beeperbox.context.md` version header bumped from v0.2.0 to v0.3.1 with the architectures column explicit.
+- `.gitignore` extended to cover editor swap files (`.*.kate-swp`, `.*.swp`, `.*.swo`, `*~`) and scoped `.env.*` files so multi-instance deployment env files don't accidentally land in git.
+
 ### Planned
-- Typed Node client (`@beeperbox/node`) — lower priority since MCP already covers language-agnostic consumption
-- Python client (`beeperbox` on PyPI) — same rationale
-- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time, so "multi-tenant in one container" would require multi-Beeper-Desktop, at which point you might as well run multiple containers. The multi-instance pattern is documented in GUIDE as of v0.2.1.
+- ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
+- ~~Python client (`beeperbox` on PyPI)~~ — **dropped** for the same reason.
+- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
+- Whatever the first real user issue asks for.
 
 ## [0.3.1] — 2026-04-13
 
