@@ -13,13 +13,22 @@ const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 
 // ─── beeper api helper ────────────────────────────────────────────
 
-async function beeperFetch(path) {
+async function beeperFetch(path, opts = {}) {
   if (!BEEPER_TOKEN) throw rpcError(-32000, 'BEEPER_TOKEN env var not set — create a token in Beeper Settings > Developers and pass it to the container');
-  const r = await fetch(`${BEEPER_API}${path}`, {
+  const init = {
+    method: opts.method || 'GET',
     headers: { Authorization: `Bearer ${BEEPER_TOKEN}` },
-  });
+  };
+  if (opts.body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(`${BEEPER_API}${path}`, init);
   if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  return r.json();
+  // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
+  const text = await r.text();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return text; }
 }
 
 // ─── network normalization ────────────────────────────────────────
@@ -170,6 +179,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'archive_chat',
+    description: 'Archive or unarchive a chat. Archived chats are moved out of the active inbox (list_inbox no longer returns them) but messages and history are preserved. Use this to clean up handled chats after replying or processing them. Beeper does not expose a mark-as-read endpoint, so archiving is the closest primitive for the "I am done with this conversation" pattern. Pass archived=false to unarchive.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The chat ID to archive (the `id` field from any Chat object).' },
+        archived: { type: 'boolean', description: 'true to archive (default), false to unarchive', default: true },
+      },
+      required: ['chat_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_inbox',
     description: 'List the most recently active chats from the user\'s connected messaging accounts. Excludes the bot\'s own note-to-self chat (use note_to_self for that). Returns chat metadata including network (whatsapp/telegram/imessage/etc.), title, unread count, and last activity timestamp.',
     inputSchema: {
@@ -220,6 +242,16 @@ async function callTool(name, args) {
       // Beeper returns newest first; reverse so oldest comes first within the page
       // (more natural for an LLM building a conversation thread).
       return list.slice(0, limit).map((m) => normalizeMessage(m, chat)).reverse();
+    }
+
+    case 'archive_chat': {
+      if (!args.chat_id) throw rpcError(-32602, 'archive_chat requires chat_id');
+      const archived = args.archived !== false; // default true
+      await beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}/archive`, {
+        method: 'POST',
+        body: { archived },
+      });
+      return { chat_id: args.chat_id, archived };
     }
 
     case 'list_inbox': {
