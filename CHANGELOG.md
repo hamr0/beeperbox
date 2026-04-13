@@ -5,7 +5,7 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 ## [Unreleased]
 
 ### Added
-- Docker `HEALTHCHECK` directive probing `http://[::1]:23373/v1/info` every 30s with a 90s start-period (gives Beeper Desktop time to boot and Matrix sync to settle). Probe targets the API's real loopback binding, not the socat forwarder, so a degraded API marks the container unhealthy even while the forwarder is still running. Orchestrators (compose, k8s, systemd) can now restart a zombie container automatically.
+- Docker `HEALTHCHECK` directive probing `http://127.0.0.1:23380/v1/info` every 30s with a 90s start-period. Probe goes through the socat forwarder — same path external clients use — so both a crashed Beeper API and a crashed forwarder mark the container unhealthy. Orchestrators (compose, k8s, systemd) can now observe degraded containers; plain Docker needs an autoheal sidecar to auto-restart on unhealthy, Swarm/Kubernetes do it natively. Process-death recovery is already covered by `restart: unless-stopped` + the entrypoint's `wait $BEEPER_PID`.
 
 ### Planned
 - Typed Node client (`@beeperbox/node`)
