@@ -38,4 +38,10 @@ EXPOSE 6080 23380
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Probe the Beeper Desktop API directly on its loopback binding — bypasses socat
+# so an unhealthy API fails the check even if the forwarder is still up.
+# Start period gives Beeper Desktop time to boot + Matrix sync to settle.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+    CMD curl -sf http://[::1]:23373/v1/info > /dev/null || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]

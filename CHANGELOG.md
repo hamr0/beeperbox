@@ -4,10 +4,12 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added
+- Docker `HEALTHCHECK` directive probing `http://[::1]:23373/v1/info` every 30s with a 90s start-period (gives Beeper Desktop time to boot and Matrix sync to settle). Probe targets the API's real loopback binding, not the socat forwarder, so a degraded API marks the container unhealthy even while the forwarder is still running. Orchestrators (compose, k8s, systemd) can now restart a zombie container automatically.
+
 ### Planned
 - Typed Node client (`@beeperbox/node`)
 - Bootstrap script for first-run OAuth via CLI (no browser required)
-- `/health` endpoint for container orchestration
 - GitHub Actions workflow publishing image to GHCR on tag
 - Python client (`beeperbox` on PyPI)
 
