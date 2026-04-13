@@ -102,6 +102,15 @@ function normalizeChat(raw, accounts) {
 
 const TOOLS = [
   {
+    name: 'list_accounts',
+    description: 'List all messaging accounts (networks) connected to this Beeper account. Each account corresponds to one platform — WhatsApp, Telegram, Discord, etc. Use this to see which platforms are reachable before calling other tools, or to discover what kinds of chats exist. Returns network slug (machine-readable, e.g. "whatsapp"), network label (human, e.g. "WhatsApp"), the underlying account ID, and the user\'s display name on that platform.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_inbox',
     description: 'List the most recently active chats from the user\'s connected messaging accounts. Excludes the bot\'s own note-to-self chat (use note_to_self for that). Returns chat metadata including network (whatsapp/telegram/imessage/etc.), title, unread count, and last activity timestamp.',
     inputSchema: {
@@ -116,6 +125,20 @@ const TOOLS = [
 
 async function callTool(name, args) {
   switch (name) {
+    case 'list_accounts': {
+      const accounts = await beeperFetch('/v1/accounts');
+      const list = Array.isArray(accounts) ? accounts : (accounts.items || []);
+      return list.map((a) => ({
+        account_id: a.accountID,
+        network: networkSlug(a.network),
+        network_label: a.network,
+        user: {
+          id: a.user?.id || null,
+          display_name: a.user?.fullName || a.user?.displayText || a.user?.username || null,
+        },
+      }));
+    }
+
     case 'list_inbox': {
       const limit = Math.min(Math.max(args.limit || 20, 1), 100);
       // Beeper returns ~25 items minimum regardless of ?limit=, so we fetch
