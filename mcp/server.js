@@ -111,6 +111,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_chat',
+    description: 'Fetch metadata for one specific chat by ID. Returns the same Chat schema as list_inbox so the caller does not need to learn a second shape. Use this when you have a chat ID from a previous call (e.g. from list_inbox or search_messages) and need its current state — most often to check unread_count, last_message_at, or title before replying.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The chat ID to fetch (the `id` field from any Chat object returned by list_inbox or get_chat).' },
+      },
+      required: ['chat_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_inbox',
     description: 'List the most recently active chats from the user\'s connected messaging accounts. Excludes the bot\'s own note-to-self chat (use note_to_self for that). Returns chat metadata including network (whatsapp/telegram/imessage/etc.), title, unread count, and last activity timestamp.',
     inputSchema: {
@@ -137,6 +149,15 @@ async function callTool(name, args) {
           display_name: a.user?.fullName || a.user?.displayText || a.user?.username || null,
         },
       }));
+    }
+
+    case 'get_chat': {
+      if (!args.chat_id) throw rpcError(-32602, 'get_chat requires chat_id');
+      const [accounts, raw] = await Promise.all([
+        getAccountMap(),
+        beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`),
+      ]);
+      return normalizeChat(raw, accounts);
     }
 
     case 'list_inbox': {
