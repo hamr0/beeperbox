@@ -1,0 +1,10 @@
+.git
+.gitignore
+.github
+.claude
+docs
+scripts
+README.md
+CHANGELOG.md
+LICENSE
+*.md

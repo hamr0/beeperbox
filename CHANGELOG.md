@@ -4,41 +4,48 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
-### Added
-- Docker `HEALTHCHECK` directive probing `http://127.0.0.1:23380/v1/info` every 30s with a 90s start-period. Probe goes through the socat forwarder — same path external clients use — so both a crashed Beeper API and a crashed forwarder mark the container unhealthy. Orchestrators (compose, k8s, systemd) can now observe degraded containers; plain Docker needs an autoheal sidecar to auto-restart on unhealthy, Swarm/Kubernetes do it natively. Process-death recovery is already covered by `restart: unless-stopped` + the entrypoint's `wait $BEEPER_PID`.
-- `docs/GUIDE.md`: long-form user guide covering install, first-run login, access token creation, API examples (curl, vanilla Node, vanilla Python), VPS deployment with SSH tunneling / Tailscale / reverse proxy patterns, operating and upgrading, troubleshooting tree, security model, and known limits.
-
-### Changed
-- **BREAKING (security):** docker-compose now binds published ports to `127.0.0.1` explicitly (`"127.0.0.1:6080:6080"` and `"127.0.0.1:23374:23380"`) instead of Docker's default `0.0.0.0`. Previously the API and noVNC UI were reachable from every network interface on the host, which on a VPS means the open internet — the Bearer token was the only thing between a random scanner and Beeper Desktop's API, and noVNC had no auth at all. After this change, only processes on the same host can reach the ports. For remote access use an SSH tunnel, Tailscale/Wireguard, or a reverse proxy with TLS + auth — see `docs/GUIDE.md`. Users who deliberately want public exposure can remove the `127.0.0.1:` prefix, but this is strongly discouraged.
-
 ### Planned
 - Typed Node client (`@beeperbox/node`)
 - Bootstrap script for first-run OAuth via CLI (no browser required)
-- GitHub Actions workflow publishing image to GHCR on tag
 - Python client (`beeperbox` on PyPI)
+- Multi-arch image (arm64 for Raspberry Pi and cheap ARM VPSes)
 
 ## [0.1.0] — 2026-04-13
 
-First working proof-of-concept.
+First working proof-of-concept. Headless Beeper Desktop in a Debian 12 container, one-time browser login, persistent local HTTP API.
 
 ### Added
-- `Dockerfile` on `debian:12-slim` with Xvfb, openbox, x11vnc, noVNC, websockify, and all Beeper Desktop Electron runtime deps
-- `entrypoint.sh` orchestrating virtual display → window manager → VNC → noVNC → Beeper Desktop → API readiness check
+- `Dockerfile` on `debian:12-slim` with Xvfb, openbox, x11vnc, noVNC, websockify, socat, and all Beeper Desktop Electron runtime deps
+- `entrypoint.sh` orchestrating virtual display → window manager → VNC → noVNC → Beeper Desktop → socat forwarder → API readiness check
 - Beeper Desktop AppImage extraction at build time (avoids FUSE requirement at runtime)
 - `socat` forwarder bridging Beeper's IPv6-loopback-only API (`[::1]:23373`) to `0.0.0.0:23380` so Docker port mapping can reach it
-- `docker-compose.yml` with `restart: unless-stopped`, persistent volume for Beeper config, port mappings `6080` (noVNC) and `23374 → 23380` (API)
-- README with quick-start, setup walkthrough, and why/status sections
+- `docker-compose.yml` with `restart: unless-stopped`, persistent volume for Beeper config, localhost-bound port mappings `127.0.0.1:6080` (noVNC) and `127.0.0.1:23374 → :23380` (API)
+- Docker `HEALTHCHECK` directive probing `http://127.0.0.1:23380/v1/info` every 30s with a 90s start-period. Probe goes through the socat forwarder — same path external clients use — so both a crashed Beeper API and a crashed forwarder mark the container unhealthy. Orchestrators (compose, k8s, systemd) can now observe degraded containers; plain Docker needs an autoheal sidecar to auto-restart on unhealthy, Swarm/Kubernetes do it natively. Process-death recovery is already covered by `restart: unless-stopped` + the entrypoint's `wait $BEEPER_PID`.
+- `README.md` with architecture diagram, quick-start, port table, and roadmap
+- `docs/GUIDE.md`: long-form user guide covering install, first-run login, access token creation (manual + OAuth2 PKCE), API examples in curl / vanilla Node / vanilla Python, VPS deployment patterns (SSH tunnel, Tailscale, Caddy reverse proxy with TLS + basic auth), operating commands, upgrading, a troubleshooting tree for the common symptoms, the two-layer security model, and known limits
+- `scripts/smoke-test.sh`: repeatable end-to-end check that builds the image, starts the container, waits for `(healthy)`, and asserts `/v1/info` reports `"status":"running"` — exits non-zero with a clear reason on any failure
+- `.github/workflows/release.yml`: GitHub Actions workflow that builds the image on semver tag push (`v*.*.*`) and publishes to GHCR at `ghcr.io/<owner>/beeperbox:<version>` + `:latest`, with buildx layer caching
+- `.dockerignore` excluding docs, `.git`, `.github`, `.claude`, and markdown so build contexts stay small
+- `LICENSE` (MIT)
+
+### Security
+- Published ports bound explicitly to `127.0.0.1` instead of Docker's `0.0.0.0` default. Before this, on a VPS with a public IP both the API and noVNC UI were reachable from the open internet — the Bearer token was the only control on the API and noVNC had no auth at all, so anyone hitting `:6080` could take over Beeper Desktop. After this change, only processes on the same host can reach the ports. Remote access now requires a deliberate opt-in (SSH tunnel, Tailscale/Wireguard, or a TLS-terminating reverse proxy with auth in front) — all three are documented in `docs/GUIDE.md`.
 
 ### Verified
 - Image builds clean on Fedora 43 + Docker CE 29.3.1
-- Container boots Beeper Desktop headless, Matrix sync loop stable
+- Container boots Beeper Desktop headless, Matrix sync loop stable, WhatsApp bridge reachable
 - Browser-based first-run login via `http://localhost:6080/vnc.html` works
-- After enabling **Settings → Developers → Start API on launch**, `curl http://localhost:23374/v1/spec` returns full OpenAPI 3.1.0 document
+- After enabling **Settings → Developers → Enable API + Start API on launch**, `curl http://localhost:23374/v1/info` returns the Beeper Desktop info payload
 - Config volume persists login across container restarts
+- Healthcheck transitions `starting → healthy` within the 90s start-period with `FailingStreak: 0`
+- All three failure modes (API down, API error, forwarder down) produce non-zero curl exit codes and flip the healthcheck
+- Localhost-only port binding: `curl localhost:23374 → 200`, `curl <LAN-IP>:23374 → connection refused`
+- `scripts/smoke-test.sh` completes 4/4 checks against a fresh build
 
 ### Known limitations
-- POC scope — no typed clients, no bootstrap automation, no health endpoint
-- Image size ~1GB, idle RAM ~500MB (Electron + Chromium are the bulk)
+- Image size ~1GB, idle RAM ~500MB (Electron + Chromium are the bulk; Alpine is not a drop-in replacement — musl breaks Chromium)
 - Beeper API binds to `[::1]:23373` inside the container and is not configurable; socat workaround is required
 - Some bridges (notably WhatsApp on-device) log harmless `no bridge event found` backup errors during initial sync — safe to ignore
-- `23373` host port collides with a native Beeper Desktop install on the same machine — compose uses `23374` by default for dev coexistence; change to `23373:23380` for production
+- x86_64 only — arm64 multi-arch build is on the roadmap
+- Single user per container — multiple Beeper accounts need multiple containers with separate volumes and ports
+- No streaming subscriptions — the Beeper Desktop API is request/response; real-time updates require polling or the advanced MCP path
