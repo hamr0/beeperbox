@@ -4,7 +4,14 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Changed
+- `docker-compose.yml` host ports are now env-overridable with sensible defaults: `BEEPERBOX_HOST_PORT` (defaults to `23373`, the canonical Beeper port) and `BEEPERBOX_NOVNC_PORT` (defaults to `6080`). Previously the API was hardcoded to host port `23374` because the original test environment had a native Beeper Desktop on `23373`. The new default works for the common case (no native Beeper on the host) without editing the compose file; dev machines that already run native Beeper just pass `BEEPERBOX_HOST_PORT=23374 docker compose up -d`. One file, one toggle, no two-compose-file spaghetti.
+- README and `docs/GUIDE.md` audience statement tightened: beeperbox is for **autonomous agents that need messaging reach without a human at a Beeper Desktop** (VPSes, containers, cron jobs, multi-tenant SaaS). Laptop users with Beeper Desktop installed locally already have everything they need from Beeper natively (HTTP API + MCP server) and are explicitly *not* the target audience. This sharpening is doc-only — no behavior change.
+- `docs/GUIDE.md` adds two facts customers were likely to trip over: (a) Beeper Desktop syncs the **top ~20 most recently active chats** by default, with workarounds for accessing older history; (b) you can pair beeperbox with a **Beeper account already configured on your phone** by signing in with the same credentials inside noVNC — bridge state lives on Beeper's servers, so all your existing WhatsApp/Signal/etc. bridges show up automatically without re-pairing.
+- `docs/GUIDE.md` gains a dedicated `## Ports` section explaining the env-override pattern, container-vs-host port namespaces (why container internal ports never collide with host ports), and `docker port beeperbox` for confirming the running mapping.
+
 ### Planned
+- Opinionated MCP server inside the container (10 tools: `list_inbox`, `read_chat`, `send_message`, `note_to_self`, `mark_as_read`, `react_to_message`, `search_messages`, `list_unread`, `get_chat`, `list_accounts`) with normalized `Chat` and `Message` schemas carrying stable IDs and a clean `network` field (whatsapp / telegram / imessage / signal / discord / slack / facebook / instagram / linkedin / matrix / beeper). Wraps the raw `/v1/*` HTTP API and adds the multis-style note-to-self vs inbox split so AI agent runtimes (Claude Code, Cursor, Cline, bareagent) can consume beeperbox as a single, language-agnostic tool source.
 - Typed Node client (`@beeperbox/node`)
 - Bootstrap script for first-run OAuth via CLI (no browser required)
 - Python client (`beeperbox` on PyPI)

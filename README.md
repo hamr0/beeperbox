@@ -1,6 +1,8 @@
 # beeperbox
 
-Headless [Beeper Desktop](https://www.beeper.com/) in a container. One-time browser login, then a persistent local HTTP API (`:23373` inside, `:23374` on the host by default) that autonomous agents and bots can hit to send and receive messages across **every bridge Beeper supports** — WhatsApp, iMessage, Signal, Discord, Slack, Telegram, Matrix, and more.
+Headless [Beeper Desktop](https://www.beeper.com/) in a container. One-time browser login, then a persistent local HTTP API on `127.0.0.1:23373` that **autonomous agents running on servers, VPSes, or in containers** can hit to send and receive messages across **every bridge Beeper supports** — WhatsApp, iMessage, Signal, Discord, Slack, Telegram, Facebook Messenger, Instagram, LinkedIn, and more.
+
+Built for the case where there is **no human at a desktop running Beeper**: cron jobs that need to message you, AI agents on a VPS that handle customer chats, multi-tenant SaaS that fans out notifications across messengers, headless servers that need messaging reach. If you are a laptop user with Beeper Desktop already installed locally, you do not need beeperbox — Beeper's native MCP and API already serve you. beeperbox is for everyone else.
 
 > **Status**: POC (v0.1.0). Works end-to-end. Not production-hardened yet. See [CHANGELOG.md](CHANGELOG.md).
 
@@ -85,7 +87,20 @@ The Beeper login and config persist in a Docker named volume (`beeperbox_config`
 | Host | Container | Purpose | Notes |
 |---|---|---|---|
 | `6080` | `6080` | noVNC web UI | Only needed for first-run login + settings; can be closed after |
-| `23374` | `23380` | Beeper Desktop API (via socat) | Change to `23373:23380` in production if host has no native Beeper |
+| `23373` | `23380` | Beeper Desktop API (via socat) | Default. Override with `BEEPERBOX_HOST_PORT=23374` if a native Beeper Desktop on the same host already owns `:23373`. |
+
+Both ports are env-overridable so you never need to edit the compose file:
+
+```sh
+# default — most customers
+docker compose up -d
+
+# dev machine that already runs native Beeper Desktop on :23373
+BEEPERBOX_HOST_PORT=23374 docker compose up -d
+
+# noVNC clash too (rare)
+BEEPERBOX_NOVNC_PORT=16080 BEEPERBOX_HOST_PORT=23374 docker compose up -d
+```
 
 ## Persistent data
 

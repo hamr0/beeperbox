@@ -2,11 +2,14 @@
 # smoke-test.sh — build, run, wait for healthy, probe /v1/info, assert PASS/FAIL
 #
 # Usage: ./scripts/smoke-test.sh
-#   Env: HOST_PORT=23374 (override the host-side API port under test)
-#        MAX_WAIT=180    (seconds to wait for (healthy) status)
+#   Env: BEEPERBOX_HOST_PORT=23373  (host-side API port, default 23373)
+#        MAX_WAIT=180               (seconds to wait for (healthy) status)
+#
+# BEEPERBOX_HOST_PORT is propagated to docker compose so the container is
+# actually published on the same port the script then probes.
 set -e
 
-HOST_PORT="${HOST_PORT:-23374}"
+export BEEPERBOX_HOST_PORT="${BEEPERBOX_HOST_PORT:-23373}"
 MAX_WAIT="${MAX_WAIT:-180}"
 
 cd "$(dirname "$0")/.."
@@ -39,8 +42,8 @@ while true; do
   sleep 5
 done
 
-step "4/4  probe http://localhost:${HOST_PORT}/v1/info"
-body=$(curl -sf "http://localhost:${HOST_PORT}/v1/info") || fail "curl failed — API not reachable on :${HOST_PORT}"
+step "4/4  probe http://localhost:${BEEPERBOX_HOST_PORT}/v1/info"
+body=$(curl -sf "http://localhost:${BEEPERBOX_HOST_PORT}/v1/info") || fail "curl failed — API not reachable on :${BEEPERBOX_HOST_PORT}"
 echo "$body" | grep -q '"status":"running"' || fail "/v1/info did not report server running — got: $body"
 pass "/v1/info returns server running"
 
