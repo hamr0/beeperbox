@@ -203,6 +203,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'send_message',
+    description: 'Send a text message to a chat. The headline write operation. Use this to reply to a customer, send a notification, or initiate a conversation. The chat must already exist (use a chat_id from list_inbox / list_unread / search_messages / get_chat). Markdown is supported in the text. To reply specifically to one message rather than just adding to the conversation, pass reply_to_message_id. Returns the new message ID for downstream operations like react_to_message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The chat ID to send to (the `id` field from any Chat object).' },
+        text: { type: 'string', description: 'The message body. Markdown supported.', minLength: 1 },
+        reply_to_message_id: { type: 'string', description: 'Optional. Pass a message_id to send this as a reply to that specific message instead of as a new conversation entry.' },
+      },
+      required: ['chat_id', 'text'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'react_to_message',
     description: 'Add an emoji reaction to a specific message. The lightest possible "I saw it" or "ack" signal — use this when you want to acknowledge a message without sending a full reply. Pass the unicode emoji directly (e.g. "👍", "❤️", "✅"). Reactions are visible to the message sender on every supported network (WhatsApp, iMessage, Telegram, Discord, Slack, Signal, etc.).',
     inputSchema: {
@@ -292,6 +306,22 @@ async function callTool(name, args) {
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self)
         .slice(0, limit);
+    }
+
+    case 'send_message': {
+      if (!args.chat_id) throw rpcError(-32602, 'send_message requires chat_id');
+      if (!args.text) throw rpcError(-32602, 'send_message requires text');
+      const body = { text: args.text };
+      if (args.reply_to_message_id) body.replyToMessageID = args.reply_to_message_id;
+      const sent = await beeperFetch(
+        `/v1/chats/${encodeURIComponent(args.chat_id)}/messages`,
+        { method: 'POST', body },
+      );
+      return {
+        chat_id: sent?.chatID || args.chat_id,
+        message_id: String(sent?.pendingMessageID || ''),
+        status: 'sent',
+      };
     }
 
     case 'react_to_message': {
