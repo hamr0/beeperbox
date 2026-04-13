@@ -59,6 +59,25 @@ function networkSlug(label) {
 }
 
 let accountCache = null;
+let noteToSelfChatID = null;
+
+async function getNoteToSelfChatID() {
+  if (noteToSelfChatID) return noteToSelfChatID;
+  // Find the Beeper-native Note to self chat — accountID is the user's
+  // primary "hungryserv"-style account, exactly one participant, and that
+  // participant is yourself. Fetch a wide page since note-to-self may not
+  // be at the top of the inbox.
+  const raw = await beeperFetch('/v1/chats?limit=100');
+  const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
+  for (const c of list) {
+    const participants = c.participants?.items || [];
+    if (c.participants?.total === 1 && participants[0]?.isSelf === true) {
+      noteToSelfChatID = c.id;
+      return noteToSelfChatID;
+    }
+  }
+  throw rpcError(-32002, 'note-to-self chat not found in top 100 chats — open Beeper Desktop and verify a "Note to self" chat exists');
+}
 
 async function getAccountMap() {
   if (accountCache) return accountCache;
@@ -203,6 +222,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'note_to_self',
+    description: 'Send a message to the bot\'s own Note to self chat — the dedicated command/control channel for the agent itself. Use this for agent self-notes ("processed 5 customer messages"), debugging output, scheduled reminders to self, or anything you want recorded but NOT seen by anyone else. Auto-resolves the correct chat ID, so no chat_id parameter needed. The note-to-self chat is excluded from list_inbox / list_unread / search_messages, so messages here will not pollute customer inbox views.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The note text. Markdown supported.', minLength: 1 },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'send_message',
     description: 'Send a text message to a chat. The headline write operation. Use this to reply to a customer, send a notification, or initiate a conversation. The chat must already exist (use a chat_id from list_inbox / list_unread / search_messages / get_chat). Markdown is supported in the text. To reply specifically to one message rather than just adding to the conversation, pass reply_to_message_id. Returns the new message ID for downstream operations like react_to_message.',
     inputSchema: {
@@ -306,6 +337,20 @@ async function callTool(name, args) {
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self)
         .slice(0, limit);
+    }
+
+    case 'note_to_self': {
+      if (!args.text) throw rpcError(-32602, 'note_to_self requires text');
+      const chatID = await getNoteToSelfChatID();
+      const sent = await beeperFetch(
+        `/v1/chats/${encodeURIComponent(chatID)}/messages`,
+        { method: 'POST', body: { text: args.text } },
+      );
+      return {
+        chat_id: chatID,
+        message_id: String(sent?.pendingMessageID || ''),
+        status: 'sent',
+      };
     }
 
     case 'send_message': {
