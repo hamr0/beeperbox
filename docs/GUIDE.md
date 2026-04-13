@@ -15,12 +15,13 @@ This is the long-form walkthrough. For a quick pitch, see the [README](../README
 9. [Use it — real examples](#use-it--real-examples)
 10. [MCP tools reference](#mcp-tools-reference)
 11. [Deploy to a VPS](#deploy-to-a-vps)
-12. [Operating it](#operating-it)
-13. [Ports](#ports)
-14. [Upgrading](#upgrading)
-15. [Troubleshooting](#troubleshooting)
-16. [Security notes](#security-notes)
-17. [Limits and caveats](#limits-and-caveats)
+12. [Running multiple instances on one VPS](#running-multiple-instances-on-one-vps)
+13. [Operating it](#operating-it)
+14. [Ports](#ports)
+15. [Upgrading](#upgrading)
+16. [Troubleshooting](#troubleshooting)
+17. [Security notes](#security-notes)
+18. [Limits and caveats](#limits-and-caveats)
 
 ---
 
@@ -270,6 +271,8 @@ In the dialog:
 4. Click create
 
 Beeper will display the token string. It is a long random value — treat it like a password.
+
+**Read-only vs read-write**: the **Allow sensitive actions** toggle gates write operations. With it **on**, the token can call every MCP tool including `send_message`, `react_to_message`, `archive_chat`, and `note_to_self`. With it **off**, the token is read-only — `list_inbox`, `list_unread`, `read_chat`, `get_chat`, `search_messages`, and `list_accounts` all still work, but write attempts return `401 Unauthorized`. If you want a least-privilege agent that can observe but not reply, create a second token with "Allow sensitive actions" off and point that agent at it. You can have as many tokens as you want on one Beeper account; revoke them individually from the same Approved Connections panel.
 
 **Note**: noVNC clipboard sharing is famously unreliable. If you cannot copy the token directly out of the noVNC view, the simplest workaround is to send the token to yourself in **Note to self** inside Beeper Desktop, then copy it from there. (Or set up real noVNC clipboard integration, but the workaround is faster.)
 
@@ -692,6 +695,107 @@ After starting the container, confirm which host port you actually got with:
 ```sh
 docker port beeperbox
 ```
+
+## Running multiple instances on one VPS
+
+beeperbox is deliberately **single-tenant** — one container, one Beeper account, one set of bridges. That's because Beeper Desktop itself can only be logged in as one user at a time. If you need to serve multiple Beeper accounts (e.g. you're running beeperbox for two or three small businesses), the answer is **spawn multiple beeperbox containers on the same host, one per account**.
+
+Each instance needs:
+
+- A unique container name (`BEEPERBOX_CONTAINER_NAME` env var)
+- A unique compose project name (`docker compose -p <project>`)
+- A unique set of host ports (the three `BEEPERBOX_*_PORT` env overrides handle this)
+- A unique named volume for Beeper session persistence (the project prefix handles this automatically)
+- Its own `.env` file with a different `BEEPER_TOKEN`
+
+**Create one `.env.<name>` file per instance** containing both the port overrides and that instance's Beeper token:
+
+```
+# .env.a
+BEEPERBOX_CONTAINER_NAME=beeperbox-a
+BEEPERBOX_HOST_PORT=23373
+BEEPERBOX_NOVNC_PORT=6080
+BEEPERBOX_MCP_PORT=23375
+BEEPER_TOKEN=paste-customer-a-token-here
+```
+
+```
+# .env.b
+BEEPERBOX_CONTAINER_NAME=beeperbox-b
+BEEPERBOX_HOST_PORT=23376
+BEEPERBOX_NOVNC_PORT=6081
+BEEPERBOX_MCP_PORT=23378
+BEEPER_TOKEN=paste-customer-b-token-here
+```
+
+```
+# .env.c
+BEEPERBOX_CONTAINER_NAME=beeperbox-c
+BEEPERBOX_HOST_PORT=23379
+BEEPERBOX_NOVNC_PORT=6082
+BEEPERBOX_MCP_PORT=23381
+BEEPER_TOKEN=paste-customer-c-token-here
+```
+
+Then launch each instance with its own project prefix and env file:
+
+```sh
+docker compose -p beeperbox-a --env-file .env.a up -d
+docker compose -p beeperbox-b --env-file .env.b up -d
+docker compose -p beeperbox-c --env-file .env.c up -d
+```
+
+Do the first-run login for each instance separately through its own noVNC port (6080 for A, 6081 for B, 6082 for C).
+
+### Resource planning
+
+Rough per-instance footprint:
+
+- **Idle**: ~500MB RAM, near-zero CPU
+- **Active** (Matrix sync, message processing): ~800MB RAM, light CPU
+- **Image**: ~1GB on disk, deduped across instances — only the first pull counts
+- **Volume**: 50–300MB per instance depending on chat history volume
+
+Density table for real VPSes:
+
+| VPS | Cost | Instances |
+|---|---|---|
+| Oracle Cloud free tier (4 ARM cores, 24GB) | **free** | 20+ |
+| Hetzner CAX21 (4 ARM vCPU, 8GB) | €5.39/mo | 6–8 |
+| Hetzner CAX11 (2 ARM vCPU, 4GB) | €3.29/mo | 3–4 |
+| DigitalOcean basic (2 vCPU, 2GB) | $12/mo | 2 |
+| 1GB VPS | varies | 1 (tight) |
+
+### Gotchas that will bite you
+
+Real issues found while testing this pattern end-to-end:
+
+- **`docker compose up -d` on an existing container with new env vars does nothing useful.** If you change ports or `BEEPERBOX_CONTAINER_NAME` and re-run `up -d`, compose sees the existing container and keeps it — the new settings are ignored. You must `docker compose -p <name> down` first, then `up -d`, to actually recreate with the new config.
+- **`--env-file` is not the same as shell env vars.** `--env-file .env.a` sets the *container's* runtime environment (so Beeper sees `BEEPER_TOKEN`), but compose reads that same file for variable substitution *only if no shell env vars override*. The safest pattern is to put *everything* — both the port overrides and the token — in one per-instance `.env.<n>` file:
+  ```
+  # .env.a
+  BEEPERBOX_CONTAINER_NAME=beeperbox-a
+  BEEPERBOX_HOST_PORT=23373
+  BEEPERBOX_NOVNC_PORT=6080
+  BEEPERBOX_MCP_PORT=23375
+  BEEPER_TOKEN=paste-token-for-account-a
+  ```
+  Then: `docker compose -p beeperbox-a --env-file .env.a up -d`. No inline shell vars needed. Compose reads `.env.a` for both substitution and runtime env.
+- **Do not reuse the same `BEEPER_TOKEN` across instances.** Tokens are tied to one Beeper account; sharing them will make multiple containers see the same chats.
+- **First-run login per instance.** Each new instance needs its own one-time Beeper login via its own noVNC port (6080 for A, 6081 for B, etc.). Bridge state lives on Beeper's servers, so if all instances use the same human's Beeper account, they inherit the same bridges — but each instance still needs to log in once to populate its local volume.
+
+### Orchestration notes
+
+- For 2–3 instances, manual `docker compose -p <name>` invocation is fine
+- For 5+, a small shell script that templates `.env.<n>` + starts the compose project from a customer list keeps things sane (~30 lines)
+- For 20+, use Docker Swarm or Kubernetes — at that scale you want real orchestration with health monitoring, automatic restarts, and rolling upgrades
+- Never reuse the same `BEEPER_TOKEN` across instances — tokens are tied to one account, and sharing them will cause each container to see the same chats instead of separate ones
+
+### Why "multi-tenant in one container" is not a feature
+
+If you were expecting beeperbox to accept a Bearer token per request and route to different Beeper accounts: that is architecturally impossible. Beeper Desktop is an Electron GUI with one logged-in user. You cannot have two different WhatsApp sessions, two different iMessage sessions, or two different anything inside one Beeper Desktop process. Multi-tenant via per-request tokens would require multi-Beeper-Desktop, which would require multi-Xvfb, multi-openbox, multi-noVNC, and multi-login — at which point you might as well just run multiple containers.
+
+Run one container per account. The compose examples above do exactly that.
 
 ## Operating it
 

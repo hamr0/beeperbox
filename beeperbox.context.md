@@ -267,8 +267,27 @@ Tool errors are returned as JSON-RPC error objects, not thrown. The LLM should r
 
 - Container reads `BEEPER_TOKEN` from env at startup (typically set via `.env` file next to `docker-compose.yml`).
 - MCP server forwards the token to the raw Beeper API on every call.
-- **One token, one container, one Beeper account.** Multi-tenant per-request token forwarding is a v0.3 item.
-- The token is created in Beeper Desktop: **Settings → Developers → Approved Connections → +** with `allow sensitive actions` and `expiry: never`. See [docs/GUIDE.md](docs/GUIDE.md) for the full flow.
+- **One container, one Beeper account, any number of tokens.** Each token can have its own scope (read-only or read + write), and you can revoke them individually from Beeper Desktop's Approved Connections panel.
+- Token creation: **Settings → Developers → Approved Connections → +** with `expiry: never`. See [docs/GUIDE.md](docs/GUIDE.md) for the full UI walkthrough.
+
+### Read-only vs read-write tokens
+
+Beeper's token creation UI has an **"Allow sensitive actions"** toggle that gates write operations — you do not need a special beeperbox flag for this, the scope is enforced inside Beeper Desktop itself.
+
+| Token scope | Allowed tools | Denied tools |
+|---|---|---|
+| **Read + write** (Allow sensitive actions: **on**) | all 10 | none |
+| **Read only** (Allow sensitive actions: **off**) | `list_accounts`, `list_inbox`, `list_unread`, `get_chat`, `read_chat`, `search_messages` | `send_message`, `note_to_self`, `react_to_message`, `archive_chat` (all return `-32001` / `401 Unauthorized`) |
+
+Use this for least-privilege agents: give a monitoring or summarization agent a read-only token so a prompt-injection attack cannot make it send messages.
+
+### Multi-tenancy
+
+**beeperbox is single-tenant by design** — one container, one Beeper account, period. Beeper Desktop is an Electron GUI with exactly one logged-in user; multiple accounts in one container would require multiple Beeper Desktops, which would require multiple Xvfb/openbox/noVNC stacks, which is exactly what running multiple containers gives you without inventing a new primitive.
+
+For serving multiple accounts on one VPS, **spawn one container per account** using `docker compose -p <project>` for namespacing and the existing `BEEPERBOX_HOST_PORT` / `BEEPERBOX_NOVNC_PORT` / `BEEPERBOX_MCP_PORT` env overrides for port offset. See the "Running multiple instances on one VPS" section in [docs/GUIDE.md](docs/GUIDE.md) for the exact pattern.
+
+Density rule of thumb: ~500MB RAM idle + ~800MB active per instance. 1GB VPS fits 1, 4GB fits 3–4, 8GB fits 6–8. Oracle Cloud's free 24GB ARM tier fits 20+.
 
 ## Gotchas
 

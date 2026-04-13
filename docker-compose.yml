@@ -1,7 +1,13 @@
 services:
   beeperbox:
     build: .
-    container_name: beeperbox
+    # Container name is env-overridable so multiple instances can coexist on
+    # one host. Single-instance users get the default "beeperbox" and do not
+    # need to set anything. Multi-instance users pass a distinct name per
+    # instance alongside BEEPERBOX_HOST_PORT / BEEPERBOX_NOVNC_PORT /
+    # BEEPERBOX_MCP_PORT:
+    #   BEEPERBOX_CONTAINER_NAME=beeperbox-a docker compose -p beeperbox-a up -d
+    container_name: ${BEEPERBOX_CONTAINER_NAME:-beeperbox}
     restart: unless-stopped
     ports:
       # Bound to 127.0.0.1 so the API and noVNC UI are NOT reachable from

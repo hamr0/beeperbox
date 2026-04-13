@@ -5,10 +5,22 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 ## [Unreleased]
 
 ### Planned
-- Typed Node client (`@beeperbox/node`)
-- Bootstrap script for first-run OAuth via CLI (no browser required)
-- Python client (`beeperbox` on PyPI)
-- Multi-arch image (arm64 for Raspberry Pi and cheap ARM VPSes)
+- Multi-arch image (arm64 for Raspberry Pi and cheap ARM VPSes) — next, confirmed Beeper ships an arm64 AppImage
+- Typed Node client (`@beeperbox/node`) — lower priority since MCP already covers language-agnostic consumption
+- Python client (`beeperbox` on PyPI) — same rationale
+- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time, so "multi-tenant in one container" would require multi-Beeper-Desktop, at which point you might as well run multiple containers. The multi-instance pattern is documented in GUIDE as of v0.2.1.
+
+## [0.2.1] — 2026-04-13
+
+Docs-only release. No code changes, no image rebuild strictly required (the v0.2.0 image still works), but the GHCR workflow republishes on tag push.
+
+### Added
+- `docs/GUIDE.md` gains a "Read-only vs read-write tokens" subsection under "Create an access token" explaining how Beeper Desktop's "Allow sensitive actions" toggle gates write operations at token creation time. Read-only tokens can call the 6 read tools (`list_inbox`, `list_unread`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`); write tools (`send_message`, `note_to_self`, `react_to_message`, `archive_chat`) return `401 Unauthorized`. No beeperbox code needed — scope is enforced inside Beeper Desktop itself.
+- `docs/GUIDE.md` gains a new top-level "Running multiple instances on one VPS" section with the `docker compose -p <project> --env-file .env.<n>` pattern, per-instance env-override examples for three customers, a density table (Oracle Cloud free tier fits 20+, Hetzner CAX21 fits 6-8, etc.), orchestration notes (manual for 2-3, shell script for 5+, Swarm/k8s for 20+), and an explicit "why multi-tenant-in-one-container is not a feature" explanation.
+- `beeperbox.context.md` gains matching shorter sections: read-only vs read-write token table, multi-tenancy explanation, density rule of thumb.
+
+### Changed
+- v0.2.0 CHANGELOG security note corrected — removed the misleading claim that "multi-tenant per-request token forwarding is a v0.3 item". That feature is dropped entirely; the honest architectural answer is "run one container per Beeper account".
 
 ## [0.2.0] — 2026-04-13
 
@@ -73,7 +85,7 @@ Message:  { id, chat_id, network, network_label, sender{id, name, is_self}, text
 - Stdio transport's `process.exit(0)` on stdin close was eagerly killing pending async tool handlers — removed. The Node event loop now exits naturally once all in-flight `fetch()` calls settle.
 
 ### Security
-- No changes since v0.1.0. Published ports remain bound to `127.0.0.1` only. The MCP server inherits the same Bearer-token auth model as the raw Beeper API (the token is shared via `BEEPER_TOKEN` env, not exposed per-request yet). Multi-tenant per-request token forwarding is a v0.3 item.
+- No changes since v0.1.0. Published ports remain bound to `127.0.0.1` only. The MCP server inherits the same Bearer-token auth model as the raw Beeper API via the `BEEPER_TOKEN` env var. Read-only vs read-write token scoping is available today via Beeper Desktop's own "Allow sensitive actions" toggle — no beeperbox-side flag needed; documented in GUIDE + context file in v0.2.1.
 
 ### Verified
 - Every MCP tool tested end-to-end against live Beeper data across 4 real accounts (Matrix, Discord, LinkedIn, Telegram)
