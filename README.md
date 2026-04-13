@@ -4,6 +4,8 @@ Headless [Beeper Desktop](https://www.beeper.com/) in a container. One-time brow
 
 > **Status**: POC (v0.1.0). Works end-to-end. Not production-hardened yet. See [CHANGELOG.md](CHANGELOG.md).
 
+For the full walkthrough — install, first-run login, access tokens, examples, VPS deployment, troubleshooting — see [**docs/GUIDE.md**](docs/GUIDE.md).
+
 ## Why
 
 Most agent and bot frameworks default to Telegram because the BotFather workflow is frictionless. That's fine — until you need to reach users on WhatsApp, iMessage, or Signal. Then your options are:

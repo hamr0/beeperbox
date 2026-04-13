@@ -4,8 +4,12 @@ services:
     container_name: beeperbox
     restart: unless-stopped
     ports:
-      - "6080:6080"
-      - "23374:23380"   # host :23374 → container :23380 (socat forwards to beeper's [::1]:23373 inside container)
+      # Bound to 127.0.0.1 so the API and noVNC UI are NOT reachable from
+      # other hosts by default. For remote access use an SSH tunnel,
+      # Tailscale/Wireguard, or a TLS-terminating reverse proxy in front.
+      # To expose publicly (NOT RECOMMENDED), change to "6080:6080" etc.
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:23374:23380"   # host :23374 → container :23380 (socat forwards to beeper's [::1]:23373 inside container)
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'

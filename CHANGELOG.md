@@ -6,6 +6,10 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ### Added
 - Docker `HEALTHCHECK` directive probing `http://127.0.0.1:23380/v1/info` every 30s with a 90s start-period. Probe goes through the socat forwarder — same path external clients use — so both a crashed Beeper API and a crashed forwarder mark the container unhealthy. Orchestrators (compose, k8s, systemd) can now observe degraded containers; plain Docker needs an autoheal sidecar to auto-restart on unhealthy, Swarm/Kubernetes do it natively. Process-death recovery is already covered by `restart: unless-stopped` + the entrypoint's `wait $BEEPER_PID`.
+- `docs/GUIDE.md`: long-form user guide covering install, first-run login, access token creation, API examples (curl, vanilla Node, vanilla Python), VPS deployment with SSH tunneling / Tailscale / reverse proxy patterns, operating and upgrading, troubleshooting tree, security model, and known limits.
+
+### Changed
+- **BREAKING (security):** docker-compose now binds published ports to `127.0.0.1` explicitly (`"127.0.0.1:6080:6080"` and `"127.0.0.1:23374:23380"`) instead of Docker's default `0.0.0.0`. Previously the API and noVNC UI were reachable from every network interface on the host, which on a VPS means the open internet — the Bearer token was the only thing between a random scanner and Beeper Desktop's API, and noVNC had no auth at all. After this change, only processes on the same host can reach the ports. For remote access use an SSH tunnel, Tailscale/Wireguard, or a reverse proxy with TLS + auth — see `docs/GUIDE.md`. Users who deliberately want public exposure can remove the `127.0.0.1:` prefix, but this is strongly discouraged.
 
 ### Planned
 - Typed Node client (`@beeperbox/node`)
