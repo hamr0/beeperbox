@@ -222,6 +222,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'search_messages',
+    description: 'Full-text search across all messages in all chats. Returns matching messages with chat_id and network propagated so the LLM can immediately tell which conversation each hit belongs to without a second lookup. Use this for follow-up questions ("what did Sara say about the contract?"), historical lookups, or finding old context the agent does not have in its current window. Older history may not be indexed if Beeper has not synced it — see the "top 20 active chats" caveat in the GUIDE.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The text to search for. Plain text — no special operators.', minLength: 1 },
+        limit: { type: 'integer', description: 'Max messages to return (default 20)', default: 20, minimum: 1, maximum: 100 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'note_to_self',
     description: 'Send a message to the bot\'s own Note to self chat — the dedicated command/control channel for the agent itself. Use this for agent self-notes ("processed 5 customer messages"), debugging output, scheduled reminders to self, or anything you want recorded but NOT seen by anyone else. Auto-resolves the correct chat ID, so no chat_id parameter needed. The note-to-self chat is excluded from list_inbox / list_unread / search_messages, so messages here will not pollute customer inbox views.',
     inputSchema: {
@@ -337,6 +350,26 @@ async function callTool(name, args) {
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self)
         .slice(0, limit);
+    }
+
+    case 'search_messages': {
+      if (!args.query) throw rpcError(-32602, 'search_messages requires query');
+      const limit = Math.min(Math.max(args.limit || 20, 1), 100);
+      const [accounts, raw] = await Promise.all([
+        getAccountMap(),
+        beeperFetch(`/v1/messages/search?query=${encodeURIComponent(args.query)}&limit=${limit}`),
+      ]);
+      const items = raw?.items || [];
+      const chatsMap = raw?.chats || {};
+      // Pre-normalize the chat map so each hit can carry network info cheaply.
+      const normalizedChats = {};
+      for (const [id, c] of Object.entries(chatsMap)) {
+        normalizedChats[id] = normalizeChat(c, accounts);
+      }
+      return items.slice(0, limit).map((m) => {
+        const chat = normalizedChats[m.chatID] || { network: 'unknown', network_label: 'Unknown' };
+        return normalizeMessage(m, chat);
+      });
     }
 
     case 'note_to_self': {
