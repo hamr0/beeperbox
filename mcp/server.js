@@ -77,6 +77,40 @@ async function getAccountMap() {
 //   lastActivity  → ISO timestamp
 //   unreadCount   → integer
 
+// ─── message normalizer ───────────────────────────────────────────
+// Map Beeper's raw message object into the second canonical shape
+// MCP clients consume. Carries chat_id and network on every message
+// so agents never need a second lookup for grounding.
+//
+// Real Beeper message fields (from /v1/chats/<id>/messages):
+//   id            → message ID
+//   chatID        → parent chat id
+//   senderID      → sender Matrix-style ID
+//   senderName    → human name
+//   isSender      → true iff this user sent it
+//   timestamp     → ISO 8601
+//   text          → message body (when type === 'TEXT')
+//   type          → 'TEXT' | 'MEDIA' | etc.
+//   replyTo       → optional, parent message id
+
+function normalizeMessage(raw, chat) {
+  return {
+    id: String(raw.id),
+    chat_id: raw.chatID || chat?.id || null,
+    network: chat?.network || 'unknown',
+    network_label: chat?.network_label || 'Unknown',
+    sender: {
+      id: raw.senderID || null,
+      name: raw.senderName || null,
+      is_self: !!raw.isSender,
+    },
+    text: raw.text || (raw.type === 'TEXT' ? '' : `[${raw.type || 'non-text'}]`),
+    type: raw.type || 'TEXT',
+    timestamp: raw.timestamp || null,
+    reply_to: raw.replyTo || raw.reply_to || null,
+  };
+}
+
 function normalizeChat(raw, accounts) {
   const acct = accounts[raw.accountID] || { network: 'unknown', network_label: 'Unknown' };
   const participants = raw.participants?.items || [];
@@ -123,6 +157,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'read_chat',
+    description: 'Fetch the most recent messages from one chat. Returns messages in chronological order (oldest to newest within the page) with normalized sender info, network, and chat_id propagated to every message. Use this to read context before replying, or to pull the last few messages of a conversation for the LLM to reason about.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The chat ID to read from (the `id` field from any Chat object).' },
+        limit: { type: 'integer', description: 'Max messages to return (default 20)', default: 20, minimum: 1, maximum: 100 },
+      },
+      required: ['chat_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_inbox',
     description: 'List the most recently active chats from the user\'s connected messaging accounts. Excludes the bot\'s own note-to-self chat (use note_to_self for that). Returns chat metadata including network (whatsapp/telegram/imessage/etc.), title, unread count, and last activity timestamp.',
     inputSchema: {
@@ -158,6 +205,21 @@ async function callTool(name, args) {
         beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`),
       ]);
       return normalizeChat(raw, accounts);
+    }
+
+    case 'read_chat': {
+      if (!args.chat_id) throw rpcError(-32602, 'read_chat requires chat_id');
+      const limit = Math.min(Math.max(args.limit || 20, 1), 100);
+      const [accounts, chatRaw, msgRaw] = await Promise.all([
+        getAccountMap(),
+        beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`),
+        beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}/messages?limit=${Math.max(limit, 25)}`),
+      ]);
+      const chat = normalizeChat(chatRaw, accounts);
+      const list = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+      // Beeper returns newest first; reverse so oldest comes first within the page
+      // (more natural for an LLM building a conversation thread).
+      return list.slice(0, limit).map((m) => normalizeMessage(m, chat)).reverse();
     }
 
     case 'list_inbox': {
