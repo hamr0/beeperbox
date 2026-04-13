@@ -6,7 +6,9 @@ Built for the case where there is **no human at a desktop running Beeper**: cron
 
 > **Status**: v0.2.0. Ten-tool MCP server inside the container, consumable over stdio or HTTP by any AI agent runtime that speaks Model Context Protocol (Claude Code, Cursor, Cline, bareagent, ...). Not production-hardened yet. See [CHANGELOG.md](CHANGELOG.md).
 
-For the full walkthrough — install, first-run login, access tokens, MCP tools, examples, VPS deployment, troubleshooting — see [**docs/GUIDE.md**](docs/GUIDE.md).
+**Docs:**
+- [**docs/GUIDE.md**](docs/GUIDE.md) — human setup walkthrough (install, first-run login, `.env` file, troubleshooting, VPS deployment)
+- [**beeperbox.context.md**](beeperbox.context.md) — AI / developer integration guide (MCP tool reference, schemas, wiring snippets for Claude Code / Cursor / Cline / bareagent, error codes, patterns). Drop this into an agent's context window when you want the LLM to learn beeperbox quickly.
 
 ## Why
 
