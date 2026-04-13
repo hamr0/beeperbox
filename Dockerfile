@@ -25,8 +25,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L "https://api.beeper.com/desktop/download/linux/x64/stable/com.automattic.beeper.desktop" \
-    -o /opt/beeper.AppImage \
+# Beeper's download CDN uses "x64" for amd64 and "arm64" for arm64.
+# TARGETARCH is set automatically by docker buildx to "amd64", "arm64", etc.
+# based on the --platform flag. Verified both archs are published at:
+#   https://api.beeper.com/desktop/download/linux/x64/stable/...
+#   https://api.beeper.com/desktop/download/linux/arm64/stable/...
+ARG TARGETARCH
+RUN set -e; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) BEEPER_ARCH=x64 ;; \
+      arm64) BEEPER_ARCH=arm64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2 && exit 1 ;; \
+    esac; \
+    echo "downloading Beeper Desktop for ${BEEPER_ARCH}"; \
+    curl -L "https://api.beeper.com/desktop/download/linux/${BEEPER_ARCH}/stable/com.automattic.beeper.desktop" \
+        -o /opt/beeper.AppImage \
     && chmod +x /opt/beeper.AppImage \
     && cd /opt && /opt/beeper.AppImage --appimage-extract \
     && mv squashfs-root beeper \

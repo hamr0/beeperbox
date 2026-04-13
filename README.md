@@ -127,10 +127,10 @@ docker volume inspect beeperbox_beeperbox_config
 - [x] **v0.1.0** Container `HEALTHCHECK` via socat-forwarded `/v1/info`
 - [x] **v0.1.0** GitHub Actions workflow publishing image to GHCR on tag
 - [x] **v0.2.0** Opinionated MCP server with 10 semantic tools (list_inbox, read_chat, send_message, note_to_self, list_unread, search_messages, react_to_message, archive_chat, get_chat, list_accounts) over both HTTP and stdio transports
-- [ ] **v0.3.0** Typed Node client (`@beeperbox/node`)
-- [ ] **v0.3.0** Bootstrap script for CLI-driven first-run (no browser needed)
-- [ ] **v0.4.0** Python client on PyPI
-- [ ] **v0.5.0** Multi-arch image (arm64 for Raspberry Pi + cheap ARM VPSes)
+- [x] **v0.2.1** Read-only vs read-write tokens documented, multi-instance VPS pattern documented + verified
+- [x] **v0.3.0** Multi-arch image (linux/amd64 + linux/arm64) for Raspberry Pi, Oracle Cloud free ARM tier, Hetzner CAX, AWS Graviton, Apple Silicon Macs
+- [ ] **v0.4.0** Typed Node client (`@beeperbox/node`)
+- [ ] **v0.5.0** Python client on PyPI
 
 ## License
 

@@ -418,11 +418,16 @@ beeperbox v0.2.0 is a POC → early product. Real-world usage notes:
 
 ## Version compatibility
 
-| beeperbox | Beeper Desktop | MCP protocol |
-|---|---|---|
-| `0.2.0` | `4.2.715` (built into image) | `2025-03-26` |
+| beeperbox | Beeper Desktop | MCP protocol | Architectures |
+|---|---|---|---|
+| `0.3.0` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
+| `0.2.1` | `4.2.715` | `2025-03-26` | `linux/amd64` |
+| `0.2.0` | `4.2.715` | `2025-03-26` | `linux/amd64` |
+| `0.1.0` | `4.2.715` | — | `linux/amd64` |
 
 Beeper Desktop is frozen at build time in the image. Rebuilding with `docker compose build --no-cache` pulls whatever Beeper Desktop is current at that moment. API schema changes in newer Beeper versions may break normalizers — open an issue if you hit one.
+
+Starting with v0.3.0, `docker pull ghcr.io/hamr0/beeperbox:latest` gives you the variant that matches your CPU architecture automatically. Supported hosts: any amd64 Linux (x86/x64) or arm64 Linux (Raspberry Pi 4/5 64-bit, Oracle Cloud Ampere A1, Hetzner CAX-series, AWS Graviton, Apple Silicon under Docker Desktop). No `linux/arm/v7` — Beeper doesn't publish a 32-bit ARM AppImage, so 32-bit Pi OS installs need to upgrade to 64-bit.
 
 ## Source and issues
 

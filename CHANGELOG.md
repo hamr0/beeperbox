@@ -5,10 +5,30 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 ## [Unreleased]
 
 ### Planned
-- Multi-arch image (arm64 for Raspberry Pi and cheap ARM VPSes) — next, confirmed Beeper ships an arm64 AppImage
 - Typed Node client (`@beeperbox/node`) — lower priority since MCP already covers language-agnostic consumption
 - Python client (`beeperbox` on PyPI) — same rationale
 - ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time, so "multi-tenant in one container" would require multi-Beeper-Desktop, at which point you might as well run multiple containers. The multi-instance pattern is documented in GUIDE as of v0.2.1.
+
+## [0.3.0] — 2026-04-13
+
+Multi-arch image. `ghcr.io/hamr0/beeperbox:0.3.0` and `:latest` are now published as a multi-platform manifest containing both `linux/amd64` and `linux/arm64`, so Raspberry Pi 4/5, Oracle Cloud's free ARM tier, Hetzner CAX-series ARM VPSes, AWS Graviton, and Apple Silicon Macs can pull the native-arch variant automatically with no code changes.
+
+### Added
+- `Dockerfile` reads the `TARGETARCH` buildx arg and selects the matching Beeper Desktop AppImage from Beeper's CDN: `TARGETARCH=amd64` → `linux/x64/stable`, `TARGETARCH=arm64` → `linux/arm64/stable`. Both URLs verified live against `api.beeper.com` (HTTP 302 → Beeper-4.2.715-x86_64.AppImage / Beeper-4.2.715-arm64.AppImage). Unknown `TARGETARCH` values fail the build with a clear error message.
+- `.github/workflows/release.yml` gains `docker/setup-qemu-action@v3` (with `platforms: linux/amd64,linux/arm64`) and passes `platforms: linux/amd64,linux/arm64` to the `docker/build-push-action` step. Build cache is reused across both platforms via the existing GHA cache backend. GHCR receives a single multi-arch manifest per tag.
+- Documentation: new "Architectures" row in the version-compatibility section (GUIDE + context file) noting that `docker pull ghcr.io/hamr0/beeperbox:latest` now works on both amd64 and arm64 hosts automatically.
+
+### Changed
+- Image tags `0.3.0`, `0.3`, `0`, and `latest` on GHCR are now multi-arch. Hosts pull the variant matching their CPU architecture with no flags needed. Users who need to force a specific variant can pass `--platform linux/arm64` to `docker pull`.
+
+### Verified
+- Local amd64 build via `docker buildx build --platform linux/amd64 --load` completes successfully with the new TARGETARCH switch — proves the Dockerfile change doesn't break the native path for existing users.
+- arm64 local build was attempted but blocked by this host's missing `qemu-user-static` package (Fedora default). The real arm64 validation happens in the GHCR release workflow on GitHub Actions runners, which include QEMU by default via `setup-qemu-action@v3`.
+- Beeper Desktop's download CDN confirmed to serve a native `ELF 64-bit LSB executable, ARM aarch64` at the arm64 URL (218MB), so the Dockerfile just needs to hit the right URL per architecture.
+
+### Known limitations
+- No `linux/arm/v7` (32-bit ARM) — Beeper does not publish a 32-bit ARM AppImage, so Raspberry Pi 2/3 and 32-bit Pi 4 OS installs are not supported. Install Raspberry Pi OS 64-bit on those devices.
+- Image size on disk is still ~1.9GB per architecture; the multi-arch manifest doesn't reduce per-platform footprint, it just picks the right one for your host.
 
 ## [0.2.1] — 2026-04-13
 
