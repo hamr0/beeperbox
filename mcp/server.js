@@ -203,6 +203,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'react_to_message',
+    description: 'Add an emoji reaction to a specific message. The lightest possible "I saw it" or "ack" signal — use this when you want to acknowledge a message without sending a full reply. Pass the unicode emoji directly (e.g. "👍", "❤️", "✅"). Reactions are visible to the message sender on every supported network (WhatsApp, iMessage, Telegram, Discord, Slack, Signal, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The chat ID containing the message (the `chat_id` field from any Message object).' },
+        message_id: { type: 'string', description: 'The message ID to react to (the `id` field from any Message object).' },
+        emoji: { type: 'string', description: 'The unicode emoji to react with (e.g. "👍", "❤️", "✅").' },
+      },
+      required: ['chat_id', 'message_id', 'emoji'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_unread',
     description: 'List chats that have one or more unread messages. Same Chat schema as list_inbox, filtered to only chats where unread_count > 0. Use this as the primary "what needs my attention right now?" tool — agents typically call this first to triage, then read_chat on each result to fetch the actual unread messages.',
     inputSchema: {
@@ -278,6 +292,17 @@ async function callTool(name, args) {
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self)
         .slice(0, limit);
+    }
+
+    case 'react_to_message': {
+      if (!args.chat_id) throw rpcError(-32602, 'react_to_message requires chat_id');
+      if (!args.message_id) throw rpcError(-32602, 'react_to_message requires message_id');
+      if (!args.emoji) throw rpcError(-32602, 'react_to_message requires emoji');
+      await beeperFetch(
+        `/v1/chats/${encodeURIComponent(args.chat_id)}/messages/${encodeURIComponent(args.message_id)}/reactions`,
+        { method: 'POST', body: { reactionKey: args.emoji } },
+      );
+      return { chat_id: args.chat_id, message_id: args.message_id, emoji: args.emoji, status: 'reacted' };
     }
 
     case 'list_unread': {
