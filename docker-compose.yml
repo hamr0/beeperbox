@@ -1,0 +1,14 @@
+services:
+  beeperbox:
+    build: .
+    container_name: beeperbox
+    restart: unless-stopped
+    ports:
+      - "6080:6080"
+      - "23374:23380"   # host :23374 → container :23380 (socat forwards to beeper's [::1]:23373 inside container)
+    volumes:
+      - beeperbox_config:/root/.config
+    shm_size: '256m'
+
+volumes:
+  beeperbox_config:
