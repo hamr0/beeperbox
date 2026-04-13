@@ -202,6 +202,17 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'list_unread',
+    description: 'List chats that have one or more unread messages. Same Chat schema as list_inbox, filtered to only chats where unread_count > 0. Use this as the primary "what needs my attention right now?" tool — agents typically call this first to triage, then read_chat on each result to fetch the actual unread messages.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: 'Max chats to return (default 20)', default: 20, minimum: 1, maximum: 100 },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 async function callTool(name, args) {
@@ -266,6 +277,21 @@ async function callTool(name, args) {
       return list
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self)
+        .slice(0, limit);
+    }
+
+    case 'list_unread': {
+      const limit = Math.min(Math.max(args.limit || 20, 1), 100);
+      // Pull a wider page than the user's limit so the unread filter has
+      // headroom — most chats will be already-read so we need to over-fetch.
+      const [accounts, raw] = await Promise.all([
+        getAccountMap(),
+        beeperFetch(`/v1/chats?limit=100`),
+      ]);
+      const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
+      return list
+        .map((c) => normalizeChat(c, accounts))
+        .filter((c) => !c.is_note_to_self && c.unread_count > 0)
         .slice(0, limit);
     }
     default:
