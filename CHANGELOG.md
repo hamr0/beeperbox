@@ -9,7 +9,22 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 - Python client (`beeperbox` on PyPI) — same rationale
 - ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time, so "multi-tenant in one container" would require multi-Beeper-Desktop, at which point you might as well run multiple containers. The multi-instance pattern is documented in GUIDE as of v0.2.1.
 
+## [0.3.1] — 2026-04-13
+
+Fixes the v0.3.0 arm64 cross-build failure. No user-visible behavior change beyond "the arm64 variant now actually builds and publishes".
+
+### Fixed
+- Dockerfile no longer runs the Beeper AppImage's launcher (`./file --appimage-extract`) to self-extract. Instead, it finds the embedded squashfs offset and extracts it directly with `unsquashfs -o <offset>`. Type 2 AppImages run their launcher stub as a real ELF binary, and that exec doesn't work cleanly under QEMU user-mode emulation during `docker buildx` cross-arch builds — v0.3.0's arm64 stage failed with `Exec format error` even on GitHub Actions runners, not just on the Fedora dev host.
+- The squashfs magic `hsqs` occurs naturally inside the AppImage's ELF code/data too, so the first grep match is often a false positive. The Dockerfile now iterates every candidate offset and picks the first one where `unsquashfs -s` can read a valid superblock.
+- Added `squashfs-tools` to the apt install list.
+
+### Verified
+- Native amd64 build succeeds via `docker compose build` with the new extraction path; container boots healthy in ~15s; both the raw Beeper API (`/v1/info`) and the MCP server (`tools/list`) return 200.
+- Local amd64 test was the minimum sanity check; the arm64 cross-build happens on GHCR via the release workflow as part of this tag push. Previous v0.3.0 release failed at the `--appimage-extract` step during the arm64 stage; this fix removes the AppImage launcher from the build entirely.
+
 ## [0.3.0] — 2026-04-13
+
+**Superseded by v0.3.1 due to a cross-build arm64 failure — do not pull `ghcr.io/hamr0/beeperbox:0.3.0`; use `0.3.1` or `latest`.**
 
 Multi-arch image. `ghcr.io/hamr0/beeperbox:0.3.0` and `:latest` are now published as a multi-platform manifest containing both `linux/amd64` and `linux/arm64`, so Raspberry Pi 4/5, Oracle Cloud's free ARM tier, Hetzner CAX-series ARM VPSes, AWS Graviton, and Apple Silicon Macs can pull the native-arch variant automatically with no code changes.
 

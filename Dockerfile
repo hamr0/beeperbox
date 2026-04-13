@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     socat \
     nodejs \
+    squashfs-tools \
     curl \
     ca-certificates \
     libnss3 \
@@ -30,6 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # based on the --platform flag. Verified both archs are published at:
 #   https://api.beeper.com/desktop/download/linux/x64/stable/...
 #   https://api.beeper.com/desktop/download/linux/arm64/stable/...
+#
+# We extract the squashfs payload directly via `unsquashfs -o <offset>`
+# instead of running the AppImage's launcher (`./file --appimage-extract`).
+# Why: Type 2 AppImages run their launcher stub to self-extract, and that
+# stub's exec semantics break under QEMU user-mode emulation during
+# cross-arch builds — we hit `Exec format error` on arm64 under amd64 GHA
+# runners. Reading the squashfs magic "hsqs" to find the offset and calling
+# unsquashfs directly bypasses the launcher entirely and works identically
+# on any build platform.
 ARG TARGETARCH
 RUN set -e; \
     case "${TARGETARCH:-amd64}" in \
@@ -39,11 +49,22 @@ RUN set -e; \
     esac; \
     echo "downloading Beeper Desktop for ${BEEPER_ARCH}"; \
     curl -L "https://api.beeper.com/desktop/download/linux/${BEEPER_ARCH}/stable/com.automattic.beeper.desktop" \
-        -o /opt/beeper.AppImage \
-    && chmod +x /opt/beeper.AppImage \
-    && cd /opt && /opt/beeper.AppImage --appimage-extract \
-    && mv squashfs-root beeper \
-    && rm /opt/beeper.AppImage
+        -o /opt/beeper.AppImage; \
+    # The squashfs magic "hsqs" also occurs naturally inside the ELF launcher
+    # as code/data, so the first match is often a false positive. Iterate all
+    # candidates and pick the first one where `unsquashfs -s` can actually
+    # read a valid superblock.
+    OFFSET=""; \
+    for candidate in $(grep -aboP '\x68\x73\x71\x73' /opt/beeper.AppImage | cut -d: -f1); do \
+      if unsquashfs -s -o "$candidate" /opt/beeper.AppImage >/dev/null 2>&1; then \
+        OFFSET="$candidate"; \
+        break; \
+      fi; \
+    done; \
+    [ -n "$OFFSET" ] || (echo "no valid squashfs superblock found in AppImage" >&2 && exit 1); \
+    echo "squashfs offset: $OFFSET"; \
+    unsquashfs -d /opt/beeper -o "$OFFSET" /opt/beeper.AppImage; \
+    rm /opt/beeper.AppImage
 
 COPY mcp /opt/mcp
 
