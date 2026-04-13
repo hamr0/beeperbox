@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openbox \
     dbus-x11 \
     socat \
+    nodejs \
     curl \
     ca-certificates \
     libnss3 \
@@ -31,9 +32,11 @@ RUN curl -L "https://api.beeper.com/desktop/download/linux/x64/stable/com.automa
     && mv squashfs-root beeper \
     && rm /opt/beeper.AppImage
 
+COPY mcp /opt/mcp
+
 VOLUME /root/.config
 
-EXPOSE 6080 23380
+EXPOSE 6080 23380 23375
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

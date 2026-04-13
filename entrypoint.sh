@@ -30,6 +30,13 @@ sleep 5
 socat TCP4-LISTEN:23380,fork,reuseaddr TCP6:[::1]:23373 &
 echo "[ok] socat forwarder 0.0.0.0:23380 -> [::1]:23373"
 
+# beeperbox-mcp http transport — wraps the beeper api with a normalized,
+# opinionated tool surface for ai agent runtimes (claude code, cursor,
+# bareagent, etc.). reads BEEPER_TOKEN from env to authenticate against
+# the local beeper api.
+node /opt/mcp/server.js &
+echo "[ok] beeperbox-mcp on 0.0.0.0:23375"
+
 for i in $(seq 1 60); do
   if curl -sf http://localhost:23373/v1/spec > /dev/null 2>&1; then
     echo "[ok] beeper api -> http://localhost:23373"

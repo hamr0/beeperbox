@@ -142,23 +142,65 @@ Enable these two toggles:
 
 ## Create an access token
 
-All API operations except `/v1/info` require an `Authorization: Bearer <token>` header. There are two ways to get a token.
+All API operations except `/v1/info` require an `Authorization: Bearer <token>` header. The MCP server inside the container also needs this token to call the local Beeper API. **You create the token once and forget it** — it persists across container rebuilds and host reboots.
 
-### Option A — create a token manually in Beeper Desktop (simplest)
+### Option A — create a token manually in Beeper Desktop (recommended)
 
-Still in **Settings → Developers**, there is a section for access tokens. Create one, give it a name (e.g. `beeperbox-local`), and copy the token string. It will be a long random string — treat it like a password.
+Still inside Beeper Desktop in noVNC: **Settings → Developers → Approved Connections → +**
 
-Save it in your environment:
+In the dialog:
+
+1. **Name** — call it whatever helps you remember (e.g. `beeperbox-mcp`)
+2. **Permissions** — select **Allow sensitive actions** (the MCP server needs read + write to do anything useful)
+3. **Expiry** — pick **Never** unless you have a specific rotation policy
+4. Click create
+
+Beeper will display the token string. It is a long random value — treat it like a password.
+
+**Note**: noVNC clipboard sharing is famously unreliable. If you cannot copy the token directly out of the noVNC view, the simplest workaround is to send the token to yourself in **Note to self** inside Beeper Desktop, then copy it from there. (Or set up real noVNC clipboard integration, but the workaround is faster.)
+
+Once you have the token on your host machine, save it to a `.env` file next to `docker-compose.yml`:
 
 ```sh
-export BEEPER_TOKEN='paste-the-token-here'
+cd ~/PycharmProjects/beeperbox
+printf 'BEEPER_TOKEN=PASTE-TOKEN-HERE\n' > .env
 ```
 
-Or put it in a `.env` file your code reads. Do not commit it to git.
+`.env` is in `.gitignore`, so it will not be committed accidentally. Now recreate the container so docker compose picks the new env var up:
+
+```sh
+docker compose up -d
+```
+
+(`up -d` recreates the container if its env changed. `restart` does NOT pick up new env vars — you must use `up -d`.)
+
+Verify the MCP server now sees the token:
+
+```sh
+docker compose logs beeperbox 2>&1 | grep "beeper token"
+```
+
+You should see:
+
+```
+[beeperbox-mcp] beeper token: set
+```
+
+If it still says `NOT SET`, check that `.env` is in the same directory as `docker-compose.yml` and that the file has the literal text `BEEPER_TOKEN=...` with no quotes around the value.
+
+**This is a one-time setup.** The token in Beeper persists until you revoke it from the same Approved Connections panel. The `.env` file persists on disk. Together they survive every kind of restart:
+
+| Action | Token survives? |
+|---|---|
+| `docker compose restart` | yes |
+| `docker compose down && docker compose up -d` | yes |
+| `docker compose up -d --build` (image rebuild) | yes |
+| Reboot the host | yes |
+| Rebuild the host OS | no — recreate the `.env` file with the same token |
 
 ### Option B — OAuth2 PKCE flow (for distributable apps)
 
-If you are building something other people will run — e.g. an MCP server, an installable CLI, a multi-user app — you want the OAuth2 Authorization Code flow with PKCE so each user can grant their own access without pasting tokens. The endpoints are discoverable at:
+If you are building something other people will run — e.g. an installable agent, a multi-user app, a hosted SaaS — you want the OAuth2 Authorization Code flow with PKCE so each user can grant their own access without you ever seeing their token. The endpoints are discoverable at:
 
 ```sh
 curl http://localhost:23373/v1/info | python3 -m json.tool

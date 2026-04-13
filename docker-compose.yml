@@ -16,6 +16,14 @@ services:
       #   BEEPERBOX_NOVNC_PORT=16080 docker compose up -d
       - "127.0.0.1:${BEEPERBOX_NOVNC_PORT:-6080}:6080"
       - "127.0.0.1:${BEEPERBOX_HOST_PORT:-23373}:23380"
+      - "127.0.0.1:${BEEPERBOX_MCP_PORT:-23375}:23375"
+    environment:
+      # Bearer token for the Beeper Desktop API. Created in Beeper's
+      # Settings -> Developers panel after first login. Required for
+      # the MCP server to call /v1/* endpoints — without it, only the
+      # raw API on :23373 is reachable (and even that needs the token
+      # for everything except /v1/info).
+      BEEPER_TOKEN: ${BEEPER_TOKEN:-}
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'
