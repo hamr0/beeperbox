@@ -4,9 +4,9 @@ Headless [Beeper Desktop](https://www.beeper.com/) in a container. One-time brow
 
 Built for the case where there is **no human at a desktop running Beeper**: cron jobs that need to message you, AI agents on a VPS that handle customer chats, multi-tenant SaaS that fans out notifications across messengers, headless servers that need messaging reach. If you are a laptop user with Beeper Desktop already installed locally, you do not need beeperbox — Beeper's native MCP and API already serve you. beeperbox is for everyone else.
 
-> **Status**: POC (v0.1.0). Works end-to-end. Not production-hardened yet. See [CHANGELOG.md](CHANGELOG.md).
+> **Status**: v0.2.0. Ten-tool MCP server inside the container, consumable over stdio or HTTP by any AI agent runtime that speaks Model Context Protocol (Claude Code, Cursor, Cline, bareagent, ...). Not production-hardened yet. See [CHANGELOG.md](CHANGELOG.md).
 
-For the full walkthrough — install, first-run login, access tokens, examples, VPS deployment, troubleshooting — see [**docs/GUIDE.md**](docs/GUIDE.md).
+For the full walkthrough — install, first-run login, access tokens, MCP tools, examples, VPS deployment, troubleshooting — see [**docs/GUIDE.md**](docs/GUIDE.md).
 
 ## Why
 
@@ -122,10 +122,11 @@ docker volume inspect beeperbox_beeperbox_config
 ## Roadmap
 
 - [x] **v0.1.0** POC: debian slim + Xvfb + Beeper AppImage + noVNC + socat
-- [ ] **v0.2.0** Typed Node client (`@beeperbox/node`) with streaming message subscriptions
-- [ ] **v0.2.0** `/health` endpoint and container-level liveness probe
+- [x] **v0.1.0** Container `HEALTHCHECK` via socat-forwarded `/v1/info`
+- [x] **v0.1.0** GitHub Actions workflow publishing image to GHCR on tag
+- [x] **v0.2.0** Opinionated MCP server with 10 semantic tools (list_inbox, read_chat, send_message, note_to_self, list_unread, search_messages, react_to_message, archive_chat, get_chat, list_accounts) over both HTTP and stdio transports
+- [ ] **v0.3.0** Typed Node client (`@beeperbox/node`)
 - [ ] **v0.3.0** Bootstrap script for CLI-driven first-run (no browser needed)
-- [ ] **v0.3.0** Publish image to GHCR via GitHub Actions
 - [ ] **v0.4.0** Python client on PyPI
 - [ ] **v0.5.0** Multi-arch image (arm64 for Raspberry Pi + cheap ARM VPSes)
 

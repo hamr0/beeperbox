@@ -13,13 +13,14 @@ This is the long-form walkthrough. For a quick pitch, see the [README](../README
 7. [Create an access token](#create-an-access-token)
 8. [Verify the API works](#verify-the-api-works)
 9. [Use it — real examples](#use-it--real-examples)
-10. [Deploy to a VPS](#deploy-to-a-vps)
-11. [Operating it](#operating-it)
-12. [Ports](#ports)
-13. [Upgrading](#upgrading)
-14. [Troubleshooting](#troubleshooting)
-15. [Security notes](#security-notes)
-16. [Limits and caveats](#limits-and-caveats)
+10. [MCP tools reference](#mcp-tools-reference)
+11. [Deploy to a VPS](#deploy-to-a-vps)
+12. [Operating it](#operating-it)
+13. [Ports](#ports)
+14. [Upgrading](#upgrading)
+15. [Troubleshooting](#troubleshooting)
+16. [Security notes](#security-notes)
+17. [Limits and caveats](#limits-and-caveats)
 
 ---
 
@@ -473,6 +474,119 @@ As of Beeper Desktop 4.2.715, the endpoints are:
 /v1/search
 /v1/spec
 ```
+
+## MCP tools reference
+
+beeperbox exposes 10 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
+
+### The 10 tools
+
+| Tool | Required | Returns | Use case |
+|---|---|---|---|
+| `list_accounts` | — | Array of accounts with `network` slug + `network_label` | Discover which platforms are reachable at session start |
+| `list_inbox` | — | Array of `Chat` | Triage: what's happening right now |
+| `list_unread` | — | Array of `Chat` (unread only) | "What needs my attention?" — primary inbox check |
+| `get_chat` | `chat_id` | `Chat` | Refresh one chat's state before replying |
+| `read_chat` | `chat_id` | Array of `Message` (oldest first) | Pull conversation context for the LLM to reason about |
+| `search_messages` | `query` | Array of `Message` | Follow-up lookups, historical context, "what did X say about Y" |
+| `send_message` | `chat_id`, `text` | `{chat_id, message_id, status}` | The headline reply/notify tool |
+| `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves chat ID |
+| `react_to_message` | `chat_id`, `message_id`, `emoji` | `{...status: reacted}` | Lightweight ack, no full reply needed |
+| `archive_chat` | `chat_id` | `{chat_id, archived}` | Clean handled chats out of inbox (closest primitive to mark-as-read that Beeper exposes) |
+
+### Schemas the LLM learns once and reuses everywhere
+
+```
+Chat:
+  id               stable chat identifier
+  title            human-readable chat name
+  network          machine slug ("whatsapp", "telegram", "discord", ...)
+  network_label    human name ("WhatsApp", "Telegram", "Discord", ...)
+  is_group         true if this is a multi-participant chat
+  is_note_to_self  true if this is the user's own self chat (filtered from list_inbox)
+  last_message_at  ISO 8601 timestamp of the most recent activity
+  unread_count     integer
+
+Message:
+  id               stable message identifier
+  chat_id          the chat this message belongs to (always present, no second lookup)
+  network          machine slug (same as Chat)
+  network_label    human name (same as Chat)
+  sender           { id, name, is_self }
+  text             message body (or "[MEDIA]" / "[non-text]" for non-text types)
+  type             "TEXT" | "MEDIA" | ...
+  timestamp        ISO 8601
+  reply_to         parent message id if this is a reply, else null
+```
+
+### Calling a tool via HTTP (from any host/language)
+
+All calls are JSON-RPC 2.0 POST to `http://localhost:23375`. The method is always `tools/call`. Three worked examples:
+
+**1. List your top 5 inbox chats**
+
+```sh
+curl -s -X POST http://localhost:23375 \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_inbox","arguments":{"limit":5}}}
+EOF
+```
+
+**2. Send a WhatsApp reply**
+
+```sh
+curl -s -X POST http://localhost:23375 \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'EOF'
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{"chat_id":"!xxx:beeper.local","text":"on my way 👍"}}}
+EOF
+```
+
+**3. Full-text search**
+
+```sh
+curl -s -X POST http://localhost:23375 \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'EOF'
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_messages","arguments":{"query":"invoice","limit":10}}}
+EOF
+```
+
+### Wiring an agent runtime to beeperbox
+
+**Stdio transport (Claude Code, Cursor, Cline, bareagent)** — add to your MCP client config (e.g. `~/.claude/mcp.json` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "beeperbox": {
+      "command": "docker",
+      "args": ["exec", "-i", "beeperbox", "node", "/opt/mcp/server.js", "--stdio"]
+    }
+  }
+}
+```
+
+The client spawns a fresh server process per session; stdio becomes the protocol channel and the MCP server inherits the container's `BEEPER_TOKEN` env automatically.
+
+**HTTP transport (remote agents, web, no-code tools)** — point your client at `http://localhost:23375` (or the appropriate host/IP if you've tunneled it). No configuration needed beyond the URL — the same server handles both transports out of one file.
+
+### Testing tools without an agent
+
+```sh
+# tools/list — see all registered tools with their schemas
+curl -s -X POST http://localhost:23375 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"tools/list"}' \
+  | python3 -m json.tool
+
+# any tool via stdio from the host
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | docker exec -i beeperbox node /opt/mcp/server.js --stdio
+```
+
+---
 
 ## Deploy to a VPS
 

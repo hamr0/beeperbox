@@ -496,36 +496,85 @@ async function handleRequest(req) {
 
 // ─── http transport ───────────────────────────────────────────────
 
-const server = http.createServer((req, res) => {
-  if (req.method !== 'POST') {
-    res.writeHead(405, { Allow: 'POST' }).end();
-    return;
-  }
-
-  let body = '';
-  req.on('data', (chunk) => { body += chunk; });
-  req.on('end', async () => {
-    let parsed;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }));
+function startHttpTransport() {
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { Allow: 'POST' }).end();
       return;
     }
 
-    const response = await handleRequest(parsed);
-    if (response === null) {
-      res.writeHead(204).end();
-    } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(response));
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }));
+        return;
+      }
+
+      const response = await handleRequest(parsed);
+      if (response === null) {
+        res.writeHead(204).end();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+      }
+    });
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[beeperbox-mcp] listening on http://0.0.0.0:${PORT}`);
+    console.log(`[beeperbox-mcp] beeper api: ${BEEPER_API}`);
+    console.log(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET (set BEEPER_TOKEN env var)'}`);
+  });
+}
+
+// ─── stdio transport ──────────────────────────────────────────────
+// Newline-delimited JSON-RPC over stdin/stdout. Used when the MCP
+// client (Claude Code, Cursor, Cline, bareagent) spawns the server
+// as a subprocess — typically via `docker exec -i beeperbox node
+// /opt/mcp/server.js --stdio`. Stdout is reserved for the protocol;
+// all logging goes to stderr.
+
+function startStdioTransport() {
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', async (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let req;
+      try {
+        req = JSON.parse(line);
+      } catch {
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }) + '\n');
+        continue;
+      }
+      const response = await handleRequest(req);
+      if (response !== null) {
+        process.stdout.write(JSON.stringify(response) + '\n');
+      }
     }
   });
-});
+  // Do NOT process.exit() on stdin end — Node's event loop will exit
+  // naturally once all pending async handlers settle. Exiting eagerly
+  // drops in-flight tool responses (async fetch() to the Beeper API).
+  // Stderr — stdout is the protocol channel and must not carry chatter.
+  process.stderr.write('[beeperbox-mcp] stdio transport ready\n');
+  process.stderr.write(`[beeperbox-mcp] beeper api: ${BEEPER_API}\n`);
+  process.stderr.write(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET'}\n`);
+}
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[beeperbox-mcp] listening on http://0.0.0.0:${PORT}`);
-  console.log(`[beeperbox-mcp] beeper api: ${BEEPER_API}`);
-  console.log(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET (set BEEPER_TOKEN env var)'}`);
-});
+// ─── pick transport ───────────────────────────────────────────────
+
+if (process.argv.includes('--stdio')) {
+  startStdioTransport();
+} else {
+  startHttpTransport();
+}

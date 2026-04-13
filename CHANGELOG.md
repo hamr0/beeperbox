@@ -4,25 +4,82 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
-### Added
-- **MCP server (POC phase 1b)**: opinionated Model Context Protocol server inside the container, vanilla Node, zero npm deps, ~200 lines in a single `mcp/server.js` file. Speaks JSON-RPC 2.0 over HTTP transport on host port `127.0.0.1:23375` (env-overridable via `BEEPERBOX_MCP_PORT`). Implements the MCP protocol scaffolding (`initialize`, `tools/list`, `tools/call`) plus one real tool — `list_inbox` — which fetches recent chats from the Beeper API, normalizes them into a stable schema (`id`, `title`, `network`, `network_label`, `is_group`, `is_note_to_self`, `last_message_at`, `unread_count`), filters out note-to-self chats, and slices to the user-requested limit. The other 9 tools land incrementally in phase 2.
-- `nodejs` added to the Dockerfile so the image can run the MCP server. Adds ~80MB on top of the existing 1.91GB image (~4% growth). No npm dependencies; the server uses Node's built-in `http`, `fetch`, and stdlib only.
-- `BEEPER_TOKEN` env var plumbed through `docker-compose.yml` so the MCP server can authenticate against the local Beeper API. Customers create the token once via Beeper Settings → Developers → Approved Connections, save it to a `.env` file next to `docker-compose.yml`, and `docker compose up -d` picks it up. Setup is one-time; the token survives container rebuilds, restarts, and host reboots.
-- `docs/GUIDE.md` token-creation section rewritten to cover the actual Beeper Desktop UI path (Settings → Developers → Approved Connections → +), the "allow sensitive actions" + "expiry never" choices, the noVNC-clipboard-doesn't-work-so-use-note-to-self workaround, the `.env` file pattern, the `up -d` vs `restart` gotcha (compose only re-reads env on `up -d`), and a survival table showing which restart paths preserve the token.
-- New port published: `127.0.0.1:23375 → 23375` for the MCP HTTP transport, env-overridable via `BEEPERBOX_MCP_PORT`. Added to compose alongside the existing API and noVNC ports.
-
-### Changed
-- `docker-compose.yml` host ports are now env-overridable with sensible defaults: `BEEPERBOX_HOST_PORT` (defaults to `23373`, the canonical Beeper port) and `BEEPERBOX_NOVNC_PORT` (defaults to `6080`). Previously the API was hardcoded to host port `23374` because the original test environment had a native Beeper Desktop on `23373`. The new default works for the common case (no native Beeper on the host) without editing the compose file; dev machines that already run native Beeper just pass `BEEPERBOX_HOST_PORT=23374 docker compose up -d`. One file, one toggle, no two-compose-file spaghetti.
-- README and `docs/GUIDE.md` audience statement tightened: beeperbox is for **autonomous agents that need messaging reach without a human at a Beeper Desktop** (VPSes, containers, cron jobs, multi-tenant SaaS). Laptop users with Beeper Desktop installed locally already have everything they need from Beeper natively (HTTP API + MCP server) and are explicitly *not* the target audience. This sharpening is doc-only — no behavior change.
-- `docs/GUIDE.md` adds two facts customers were likely to trip over: (a) Beeper Desktop syncs the **top ~20 most recently active chats** by default, with workarounds for accessing older history; (b) you can pair beeperbox with a **Beeper account already configured on your phone** by signing in with the same credentials inside noVNC — bridge state lives on Beeper's servers, so all your existing WhatsApp/Signal/etc. bridges show up automatically without re-pairing.
-- `docs/GUIDE.md` gains a dedicated `## Ports` section explaining the env-override pattern, container-vs-host port namespaces (why container internal ports never collide with host ports), and `docker port beeperbox` for confirming the running mapping.
-
 ### Planned
-- Opinionated MCP server inside the container (10 tools: `list_inbox`, `read_chat`, `send_message`, `note_to_self`, `mark_as_read`, `react_to_message`, `search_messages`, `list_unread`, `get_chat`, `list_accounts`) with normalized `Chat` and `Message` schemas carrying stable IDs and a clean `network` field (whatsapp / telegram / imessage / signal / discord / slack / facebook / instagram / linkedin / matrix / beeper). Wraps the raw `/v1/*` HTTP API and adds the multis-style note-to-self vs inbox split so AI agent runtimes (Claude Code, Cursor, Cline, bareagent) can consume beeperbox as a single, language-agnostic tool source.
 - Typed Node client (`@beeperbox/node`)
 - Bootstrap script for first-run OAuth via CLI (no browser required)
 - Python client (`beeperbox` on PyPI)
 - Multi-arch image (arm64 for Raspberry Pi and cheap ARM VPSes)
+
+## [0.2.0] — 2026-04-13
+
+First release with an opinionated Model Context Protocol server inside the container. beeperbox is now consumable by any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) over either HTTP or stdio transport — the LLM sees 10 semantic tools for multi-messenger operations and never has to touch raw Beeper Desktop API endpoints.
+
+### Added
+
+**MCP server**
+- Opinionated MCP server inside the container, vanilla Node, zero npm deps, single-file `mcp/server.js` (~400 lines). Wraps Beeper Desktop's raw `/v1/*` HTTP API with 10 semantic tools, 2 normalized schemas (`Chat` and `Message`), and a note-to-self vs inbox split so agents never accidentally pollute customer conversations with command-channel messages.
+- **Two transports, interchangeable**, both in the same process, picked at startup via `--stdio` argv flag:
+  - **HTTP** (default, always-on): JSON-RPC 2.0 over POST on `127.0.0.1:23375` (env-overridable via `BEEPERBOX_MCP_PORT`). Started by the entrypoint. Use case: remote agents, multi-tenant SaaS, cross-container setups, cloud-hosted agent runtimes.
+  - **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout. Stdout reserved for the protocol; all logging goes to stderr. Invoked via `docker exec -i beeperbox node /opt/mcp/server.js --stdio`. Use case: Claude Code, Cursor, Cline, bareagent, or any MCP client that spawns the server as a local subprocess.
+
+**10 tools** (all verified end-to-end against a live Beeper account during development, one commit per tool for clean rollback):
+- `list_accounts` — discover which messaging platforms are connected (returns `network` slug + `network_label` human name per account)
+- `list_inbox` — top recently active chats, note-to-self filtered out
+- `list_unread` — same as list_inbox but only chats where `unread_count > 0`
+- `get_chat` — fetch one chat by ID, same `Chat` schema as list_inbox
+- `read_chat` — last N messages from a chat, oldest-first within the page, each message carries `chat_id` + `network` + `network_label` for grounding
+- `search_messages` — full-text across all chats; Beeper's response includes a `chats` map so hits resolve their network metadata in one round-trip, no N+1 fetches
+- `send_message` — send text to a chat by ID, optional `reply_to_message_id`, returns Beeper's `pendingMessageID`
+- `note_to_self` — send to the bot's own note-to-self chat with **auto-resolved chat ID**; the dedicated command/control channel for the agent, cached after first lookup, excluded from inbox views
+- `react_to_message` — add an emoji reaction (unicode, shortcode, or custom key)
+- `archive_chat` — archive or unarchive a chat; substituted for `mark_as_read` because Beeper Desktop does not expose a mark-as-read endpoint (the description explicitly tells the LLM this and names archive as the closest primitive for the "I am done with this conversation" pattern)
+
+**Normalized schemas** — two shapes the LLM learns once and reuses everywhere:
+
+```
+Chat:     { id, title, network, network_label, is_group, is_note_to_self, last_message_at, unread_count }
+Message:  { id, chat_id, network, network_label, sender{id, name, is_self}, text, type, timestamp, reply_to }
+```
+
+- Every chat and every message carries both `network` (machine slug: `whatsapp`, `telegram`, `discord`, etc.) and `network_label` (human: `"WhatsApp"`, `"Telegram"`, `"Discord"`, etc.)
+- Network normalization driven by `/v1/accounts` (which already returns clean human-readable names); chat bridge IDs are parsed as a fallback
+- `NETWORK_SLUGS` lookup table maps Beeper's display names to clean lowercase slugs: `whatsapp`, `imessage`, `telegram`, `signal`, `discord`, `slack`, `instagram`, `facebook`, `linkedin`, `gmessages`, `twitter`, `matrix`, `beeper`. Unknown networks fall back to alphanumeric-stripped lowercase of the Beeper label.
+
+**Infrastructure**
+- `nodejs` added to the Dockerfile (~80MB image growth, 4% on top of the existing 1.91GB). Zero npm deps; the server uses Node's built-in `http`, `fetch`, `crypto`, and stdlib only. No `package.json`, no `node_modules`, no supply-chain surface.
+- `BEEPER_TOKEN` env var plumbed through `docker-compose.yml`. Customers save the token to a `.env` file next to `docker-compose.yml` (gitignored), and `docker compose up -d` picks it up. Setup is one-time — token survives container rebuilds, restarts, and host reboots.
+- New port published: `127.0.0.1:23375 → 23375` for the MCP HTTP transport, env-overridable via `BEEPERBOX_MCP_PORT`.
+
+**Documentation**
+- `docs/GUIDE.md` gains a new top-level "Quick setup (10 minutes, one-time)" section walking users linearly from `git clone` → noVNC login → enable API → create token → `.env` file → `docker compose up -d` → verify → test MCP.
+- Full token-creation walkthrough covering the real Beeper Desktop UI path (Settings → Developers → Approved Connections → +), the "allow sensitive actions" + "expiry never" choices, the noVNC-clipboard-workaround (paste token into Note to self, copy on your phone), the `.env` file pattern, the `up -d` vs `restart` gotcha (compose only re-reads env on `up -d`), and a token-survival matrix.
+- New "MCP tools reference" section with all 10 tools, their required parameters, and worked curl + Claude Code + bareagent configuration examples.
+- Added facts for common footguns: (a) Beeper Desktop syncs the top ~20 most recently active chats by default — older chats need pinning or search; (b) you can pair beeperbox with a Beeper account already configured on your phone — bridge state lives on Beeper's servers, so existing WhatsApp/Signal/etc. bridges inherit automatically.
+- New `## Ports` section explaining the env-override pattern, container-vs-host port namespace separation (why container internal ports never collide with host ports), and `docker port beeperbox` for confirming the running mapping.
+
+### Changed
+- `docker-compose.yml` host ports are env-overridable with sensible defaults: `BEEPERBOX_HOST_PORT` (default `23373`, the canonical Beeper port), `BEEPERBOX_NOVNC_PORT` (default `6080`), `BEEPERBOX_MCP_PORT` (default `23375`). Previously the API was hardcoded to `23374` because the original test environment had a native Beeper Desktop on `23373`. The new default works for the common case out of the box; dev machines that already run native Beeper just pass `BEEPERBOX_HOST_PORT=23374 docker compose up -d`. One file, one toggle, no spaghetti.
+- README and `docs/GUIDE.md` audience statement tightened: beeperbox is for **autonomous agents that need messaging reach without a human at a Beeper Desktop**. Laptop users with Beeper Desktop installed locally already have Beeper's native HTTP API and MCP server — they are explicitly not the target audience and the docs say so. This sharpening is doc-only — no behavior change.
+
+### Fixed
+- Five real-Beeper-API field-shape bugs found by testing the normalizer against live data before committing the initial `list_inbox` implementation:
+  - `?limit=N` is ignored by Beeper (returns ~25 minimum) → slice client-side after normalization
+  - Network is NOT in the room ID → it lives in `chat.accountID` and maps to `/v1/accounts[].network`; cached on first use
+  - `lastActivity` is camelCase, not `last_activity`
+  - Group flag is `type === 'group'`, not `isGroup`
+  - Note-to-self detection: `participants.total === 1 AND items[0].isSelf === true` (catches both Beeper-native Note to self and each platform's saved-messages chat like Telegram Saved Messages and WhatsApp Send to yourself)
+- `send_message` v1 returned empty `message_id` — fixed to read Beeper's `pendingMessageID` field (verified against the OpenAPI `SendMessageOutput` schema) in v2 before commit.
+- `beeperFetch` refactored to support `method + body` for POST/DELETE endpoints and to handle empty-body responses (archive returns 200 with no JSON body → return `null` instead of throwing on `r.json()`).
+- Stdio transport's `process.exit(0)` on stdin close was eagerly killing pending async tool handlers — removed. The Node event loop now exits naturally once all in-flight `fetch()` calls settle.
+
+### Security
+- No changes since v0.1.0. Published ports remain bound to `127.0.0.1` only. The MCP server inherits the same Bearer-token auth model as the raw Beeper API (the token is shared via `BEEPER_TOKEN` env, not exposed per-request yet). Multi-tenant per-request token forwarding is a v0.3 item.
+
+### Verified
+- Every MCP tool tested end-to-end against live Beeper data across 4 real accounts (Matrix, Discord, LinkedIn, Telegram)
+- Stdio transport: 3 concurrent in-flight requests (initialize + tools/list + tools/call list_accounts) all return correctly via `docker exec -i` pipeline
+- HTTP transport: same 3 requests return correctly via `curl -X POST http://localhost:23375`
+- Image rebuilds cleanly, container boots, all smoke-test steps pass
 
 ## [0.1.0] — 2026-04-13
 
