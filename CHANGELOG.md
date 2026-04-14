@@ -2,7 +2,27 @@
 
 All notable changes to beeperbox are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Versioning
+
+beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one concrete rule per bump type — scoped to what's *inside* the container, not how you get it:
+
+- **MAJOR** (`X.0.0`) — held at `0` until the MCP tool set, HTTP API surface, and default ports are declared stable. Reserved for breaking changes to the runtime contract (removed MCP tool, renamed field in `Chat` / `Message` schema, default port reassigned). Bumping to `1.0.0` is an explicit "we're committing to this API" event.
+- **MINOR** (`0.X.0`) — new runtime behavior: new MCP tool, new endpoint, new architecture support (e.g. `linux/arm64`), new schema field, new transport mode. May include breaking changes while `MAJOR == 0` per semver §4 — called out loudly in the release notes when it happens.
+- **PATCH** (`0.0.X`) — bug fixes, docs, packaging, release-workflow changes, build-system tweaks that don't change what the running container does. The image hash may differ (rebuild from the same source still produces a fresh digest), but an agent calling the HTTP or MCP surface cannot tell the difference between two PATCH releases except for fixed bugs.
+
+Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
+
 ## [Unreleased]
+
+### Planned
+- ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
+- ~~Python client (`beeperbox` on PyPI)~~ — **dropped** for the same reason.
+- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
+- Whatever the first real user issue asks for.
+
+## [0.3.2] — 2026-04-14 `[PATCH]`
+
+Packaging and release-workflow changes only. The running container is bit-identical to v0.3.1; this bump is PATCH by the policy above (no runtime contract changes).
 
 ### Changed
 - Default consumption is now **pull a pre-built image from GHCR**, not clone-and-build. `docker-compose.yml` references `ghcr.io/hamr0/beeperbox:${BEEPERBOX_IMAGE_TAG:-latest}` so `curl -LO .../docker-compose.yml && docker compose up -d` is all a user needs — no clone, no multi-minute Beeper AppImage download on every host. Pin to `:0.3.2`, `:0.3`, or `:0` for reproducibility; `:latest` tracks the newest release; `:edge` tracks master and may break. A new `docker-compose.dev.yml` overlay restores `build: .` for developers and air-gapped setups (`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`).
@@ -13,13 +33,7 @@ All notable changes to beeperbox are documented here. Format follows [Keep a Cha
 - `beeperbox.context.md` version header bumped from v0.2.0 to v0.3.1 with the architectures column explicit.
 - `.gitignore` extended to cover editor swap files (`.*.kate-swp`, `.*.swp`, `.*.swo`, `*~`) and scoped `.env.*` files so multi-instance deployment env files don't accidentally land in git.
 
-### Planned
-- ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
-- ~~Python client (`beeperbox` on PyPI)~~ — **dropped** for the same reason.
-- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
-- Whatever the first real user issue asks for.
-
-## [0.3.1] — 2026-04-13
+## [0.3.1] — 2026-04-13 `[PATCH]`
 
 Fixes the v0.3.0 arm64 cross-build failure. No user-visible behavior change beyond "the arm64 variant now actually builds and publishes".
 
@@ -32,11 +46,11 @@ Fixes the v0.3.0 arm64 cross-build failure. No user-visible behavior change beyo
 - Native amd64 build succeeds via `docker compose build` with the new extraction path; container boots healthy in ~15s; both the raw Beeper API (`/v1/info`) and the MCP server (`tools/list`) return 200.
 - Local amd64 test was the minimum sanity check; the arm64 cross-build happens on GHCR via the release workflow as part of this tag push. Previous v0.3.0 release failed at the `--appimage-extract` step during the arm64 stage; this fix removes the AppImage launcher from the build entirely.
 
-## [0.3.0] — 2026-04-13
+## [0.3.0] — 2026-04-13 `[MINOR]`
 
 **Superseded by v0.3.1 due to a cross-build arm64 failure — do not pull `ghcr.io/hamr0/beeperbox:0.3.0`; use `0.3.1` or `latest`.**
 
-Multi-arch image. `ghcr.io/hamr0/beeperbox:0.3.0` and `:latest` are now published as a multi-platform manifest containing both `linux/amd64` and `linux/arm64`, so Raspberry Pi 4/5, Oracle Cloud's free ARM tier, Hetzner CAX-series ARM VPSes, AWS Graviton, and Apple Silicon Macs can pull the native-arch variant automatically with no code changes.
+New architecture support (`linux/arm64`) is a runtime capability add — MINOR per the versioning policy. Multi-arch image. `ghcr.io/hamr0/beeperbox:0.3.0` and `:latest` are now published as a multi-platform manifest containing both `linux/amd64` and `linux/arm64`, so Raspberry Pi 4/5, Oracle Cloud's free ARM tier, Hetzner CAX-series ARM VPSes, AWS Graviton, and Apple Silicon Macs can pull the native-arch variant automatically with no code changes.
 
 ### Added
 - `Dockerfile` reads the `TARGETARCH` buildx arg and selects the matching Beeper Desktop AppImage from Beeper's CDN: `TARGETARCH=amd64` → `linux/x64/stable`, `TARGETARCH=arm64` → `linux/arm64/stable`. Both URLs verified live against `api.beeper.com` (HTTP 302 → Beeper-4.2.715-x86_64.AppImage / Beeper-4.2.715-arm64.AppImage). Unknown `TARGETARCH` values fail the build with a clear error message.
@@ -55,7 +69,7 @@ Multi-arch image. `ghcr.io/hamr0/beeperbox:0.3.0` and `:latest` are now publishe
 - No `linux/arm/v7` (32-bit ARM) — Beeper does not publish a 32-bit ARM AppImage, so Raspberry Pi 2/3 and 32-bit Pi 4 OS installs are not supported. Install Raspberry Pi OS 64-bit on those devices.
 - Image size on disk is still ~1.9GB per architecture; the multi-arch manifest doesn't reduce per-platform footprint, it just picks the right one for your host.
 
-## [0.2.1] — 2026-04-13
+## [0.2.1] — 2026-04-13 `[PATCH]`
 
 Docs-only release. No code changes, no image rebuild strictly required (the v0.2.0 image still works), but the GHCR workflow republishes on tag push.
 
@@ -67,9 +81,9 @@ Docs-only release. No code changes, no image rebuild strictly required (the v0.2
 ### Changed
 - v0.2.0 CHANGELOG security note corrected — removed the misleading claim that "multi-tenant per-request token forwarding is a v0.3 item". That feature is dropped entirely; the honest architectural answer is "run one container per Beeper account".
 
-## [0.2.0] — 2026-04-13
+## [0.2.0] — 2026-04-13 `[MINOR]`
 
-First release with an opinionated Model Context Protocol server inside the container. beeperbox is now consumable by any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) over either HTTP or stdio transport — the LLM sees 10 semantic tools for multi-messenger operations and never has to touch raw Beeper Desktop API endpoints.
+First release with an opinionated Model Context Protocol server inside the container — 10 new runtime tools and a new transport. MINOR per the versioning policy. (Also changed the default host port from `23374` to `23373`, which is technically a breaking change; acceptable under semver §4 while `MAJOR == 0` but called out here for the record.) beeperbox is now consumable by any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) over either HTTP or stdio transport — the LLM sees 10 semantic tools for multi-messenger operations and never has to touch raw Beeper Desktop API endpoints.
 
 ### Added
 
@@ -138,9 +152,9 @@ Message:  { id, chat_id, network, network_label, sender{id, name, is_self}, text
 - HTTP transport: same 3 requests return correctly via `curl -X POST http://localhost:23375`
 - Image rebuilds cleanly, container boots, all smoke-test steps pass
 
-## [0.1.0] — 2026-04-13
+## [0.1.0] — 2026-04-13 `[MINOR]`
 
-First working proof-of-concept. Headless Beeper Desktop in a Debian 12 container, one-time browser login, persistent local HTTP API.
+First working proof-of-concept. Initial release. Headless Beeper Desktop in a Debian 12 container, one-time browser login, persistent local HTTP API.
 
 ### Added
 - `Dockerfile` on `debian:12-slim` with Xvfb, openbox, x11vnc, noVNC, websockify, socat, and all Beeper Desktop Electron runtime deps
