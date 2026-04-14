@@ -69,21 +69,36 @@ Same shape — most MCP clients expose a "command + args" config field. Use the 
 
 ### bareagent
 
-bareagent's `src/mcp-bridge.js` discovers and spawns MCP servers via `child_process.spawn`. Give it the same command:
+bareagent's `src/mcp-bridge.js` auto-discovers MCP servers from standard IDE config locations and spawns them via `child_process.spawn`. Add beeperbox to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "beeperbox": {
+      "command": "docker",
+      "args": ["exec", "-i", "beeperbox", "node", "/opt/mcp/server.js", "--stdio"]
+    }
+  }
+}
+```
+
+Then wire the bridge:
 
 ```javascript
 const { Loop } = require('bare-agent');
-const { discoverMcpServers } = require('bare-agent/mcp');
+const { createMCPBridge } = require('bare-agent/mcp');
 
-const mcpTools = await discoverMcpServers({
-  beeperbox: {
-    command: 'docker',
-    args: ['exec', '-i', 'beeperbox', 'node', '/opt/mcp/server.js', '--stdio'],
-  },
-});
+const bridge = await createMCPBridge({ servers: ['beeperbox'] });
+const loop = new Loop({ provider, system: bridge.systemContext });
 
-const loop = new Loop({ provider, tools: mcpTools });
+try {
+  await loop.run(messages, bridge.tools);
+} finally {
+  await bridge.close();
+}
 ```
+
+Tool names in bareagent are namespaced `beeperbox_*` (e.g. `beeperbox_list_inbox`). You can also pass `tools` into the `Loop` constructor instead of `run()` — either works. On first run, bareagent writes `.mcp-bridge.json` with every discovered tool set to `allow`; edit it and set unwanted tools to `deny` to restrict the surface.
 
 ## HTTP transport (remote agents, multi-tenant, web/no-code)
 

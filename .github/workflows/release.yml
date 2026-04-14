@@ -1,15 +1,29 @@
 name: release
 
-# Builds the beeperbox image and publishes it to GHCR whenever a semver tag
-# is pushed (e.g. v0.1.0). Also tags :latest so `docker pull ghcr.io/<owner>/beeperbox`
-# grabs the newest release without specifying a version.
+# Builds the beeperbox image and publishes it to GHCR.
 #
-# Manual dispatch is allowed for ad-hoc builds without cutting a tag.
+# Triggers:
+#   - tag push (v*.*.*)        -> :X.Y.Z, :X.Y, :X, :latest
+#   - push to master           -> :edge (bleeding-edge, may break)
+#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag and re-push
+#                                 :X.Y.Z / :X.Y / :X / :latest so the
+#                                 bundled Beeper AppImage stays current
+#                                 without needing a new code release.
+#   - manual dispatch          -> ad-hoc rebuild of newest release tag
+#
+# Source lives in the repo; published artifacts live in GHCR. Users run
+# `docker compose up` against docker-compose.yml (which references the
+# published image) without cloning. Developers use docker-compose.dev.yml
+# to build from a local checkout.
 
 on:
   push:
     tags:
       - 'v*.*.*'
+    branches:
+      - master
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +31,81 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
+  # Tagged releases and scheduled rebuilds publish the semver tags + :latest.
+  # On schedule/dispatch we resolve the newest release tag and build from
+  # that ref, so :latest keeps pointing at released code (not master HEAD).
+  release:
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git_ref=$(git ls-remote --tags --sort=-v:refname https://github.com/${{ github.repository }}.git 'v*.*.*' \
+              | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | head -n1)
+            if [ -z "$git_ref" ]; then
+              echo "No release tag found; nothing to rebuild."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "ref=$git_ref" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.ref.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Set up QEMU
+        if: steps.ref.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        if: steps.ref.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.ref.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        if: steps.ref.outputs.skip != 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/beeperbox
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.ref }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.ref }}
+            type=semver,pattern={{major}},value=${{ steps.ref.outputs.ref }}
+            type=raw,value=latest
+
+      - name: Build and push
+        if: steps.ref.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Every push to master publishes :edge. Bleeding-edge, may break between
+  # releases. Users opt in explicitly.
+  edge:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -38,24 +126,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/beeperbox
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Build and push
+      - name: Build and push :edge
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ghcr.io/${{ github.repository_owner }}/beeperbox:edge
           cache-from: type=gha
           cache-to: type=gha,mode=max

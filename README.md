@@ -30,9 +30,17 @@ If a human-attended Beeper Desktop is already running on your laptop, Beeper shi
 Prerequisites: Docker engine + compose plugin, ~1GB disk, ~600MB RAM, a Beeper account.
 
 ```sh
-git clone https://github.com/hamr0/beeperbox.git
-cd beeperbox
+curl -LO https://raw.githubusercontent.com/hamr0/beeperbox/master/docker-compose.yml
 docker compose up -d
+```
+
+This pulls the pre-built multi-arch image from GHCR (`ghcr.io/hamr0/beeperbox:latest`). No clone, no build. Pin to a specific version with `BEEPERBOX_IMAGE_TAG=0.3.1 docker compose up -d`, or track master with `:edge` (bleeding-edge, may break).
+
+Prefer to build from source? Clone the repo and overlay the dev compose file:
+
+```sh
+git clone https://github.com/hamr0/beeperbox.git && cd beeperbox
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 Then follow the 10-step quick setup in [docs/GUIDE.md](docs/GUIDE.md#quick-setup-10-minutes-one-time):

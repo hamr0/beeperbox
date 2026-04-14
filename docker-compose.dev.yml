@@ -1,0 +1,5 @@
+services:
+  beeperbox:
+    build: .
+    image: beeperbox:dev
+    pull_policy: never

@@ -1,6 +1,11 @@
 services:
   beeperbox:
-    build: .
+    # Published multi-arch image (linux/amd64 + linux/arm64) from GHCR.
+    # Pin to a specific version for reproducibility, or use :latest to
+    # track the newest release. :edge tracks master and may break.
+    # To build from a local checkout instead, overlay docker-compose.dev.yml:
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+    image: ghcr.io/hamr0/beeperbox:${BEEPERBOX_IMAGE_TAG:-latest}
     # Container name is env-overridable so multiple instances can coexist on
     # one host. Single-instance users get the default "beeperbox" and do not
     # need to set anything. Multi-instance users pass a distinct name per
