@@ -126,12 +126,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Compute OCI labels (including org.opencontainers.image.revision)
+      # so `docker inspect ghcr.io/.../beeperbox:edge` shows which master
+      # commit the image was built from. Without metadata-action the labels
+      # are empty — :latest has them because its job runs metadata-action,
+      # :edge needs the same.
+      - name: Compute OCI labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/beeperbox
+          tags: type=raw,value=edge
+
       - name: Build and push :edge
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ github.repository_owner }}/beeperbox:edge
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
