@@ -78,7 +78,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 ## License
 
-[MIT](LICENSE). Independent wrapper around Beeper Desktop, no affiliation with Beeper / Automattic.
+[Apache-2.0](LICENSE). Independent wrapper around Beeper Desktop, no affiliation with Beeper / Automattic.
 
 ## Related
 
