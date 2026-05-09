@@ -7,6 +7,11 @@
                 ╰──────────────────────────────────╯
 ```
 
+<p align="center">
+  <img src="https://img.shields.io/github/v/tag/hamr0/beeperbox?sort=semver&label=version&color=2a4f8c" alt="version (auto from latest git tag)">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
+</p>
+
 **One Docker container that plugs your AI agent into 50+ messengers through a single MCP endpoint.**
 
 WhatsApp, iMessage, Signal, Telegram, Discord, Slack, Messenger, Instagram, LinkedIn, Google Messages, Matrix — everything [Beeper](https://www.beeper.com/) bridges, reachable from one HTTP or MCP endpoint instead of 50 per-platform SDKs, OAuth dances, and rate-limit quirks. If you only need Telegram, this is overkill — use [openclaw](https://github.com/openclaw/openclaw) or any BotFather library. If you need reach across many networks from one agent, keep reading.
