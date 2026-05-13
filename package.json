@@ -1,0 +1,46 @@
+{
+  "name": "beeperbox-mcp",
+  "version": "0.3.3",
+  "description": "Standalone MCP server for beeperbox — 10 opinionated tools over the Beeper Desktop HTTP API. Runs against a beeperbox container or any local Beeper Desktop on http://127.0.0.1:23373.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "beeper",
+    "beeperbox",
+    "messaging",
+    "whatsapp",
+    "telegram",
+    "signal",
+    "imessage",
+    "ai-agent",
+    "claude",
+    "cursor"
+  ],
+  "homepage": "https://github.com/hamr0/beeperbox#readme",
+  "bugs": {
+    "url": "https://github.com/hamr0/beeperbox/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamr0/beeperbox.git"
+  },
+  "license": "Apache-2.0",
+  "author": "hamr0",
+  "main": "mcp/server.js",
+  "bin": {
+    "beeperbox-mcp": "mcp/server.js"
+  },
+  "files": [
+    "mcp/server.js",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node mcp/server.js",
+    "start:stdio": "node mcp/server.js --stdio"
+  }
+}
