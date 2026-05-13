@@ -935,7 +935,7 @@ If that still fails, check the container logs for `[SDK]` lines. No lines at all
 Either the socat forwarder didn't start, or Beeper's API isn't up yet. Check:
 
 ```sh
-docker exec beeperbox curl -sf http://[::1]:23373/v1/info > /dev/null && echo API OK || echo API DOWN
+docker exec beeperbox curl -sf http://127.0.0.1:23373/v1/info > /dev/null && echo API OK || echo API DOWN
 ```
 
 - If that prints `API OK`: socat is the problem. Restart the container.
@@ -998,7 +998,7 @@ If you need those, put them in front of beeperbox (reverse proxy, governance mid
 - **Image size**: ~1 GB. Electron + Chromium are the bulk. Do not expect this to shrink dramatically — musl-libc Alpine builds break Chromium, and stripping X server components breaks Electron.
 - **Idle RAM**: ~500 MB. Not suitable for sub-512 MB VPS plans.
 - **Single user**: one Beeper account per container. If you need multiple accounts, run multiple containers with different ports and volumes.
-- **Desktop API binds to `[::1]:23373`** inside the container. beeperbox uses `socat` to make it reachable externally. If Beeper ever adds a flag to bind `0.0.0.0` directly, socat will go away — it is a workaround, not a feature.
+- **Desktop API binds to the loopback interface only** inside the container. beeperbox uses `socat` to forward `0.0.0.0:23380 → 127.0.0.1:23373` so the API is reachable from the host. If Beeper ever adds a flag to bind `0.0.0.0` directly, socat will go away — it is a workaround, not a feature.
 - **WhatsApp on-device bridge** sometimes logs `no bridge event found` warnings during backup. Harmless, ignore.
 - **Not multi-arch yet**: the Docker image is x86_64 only. Raspberry Pi / arm64 support is on the roadmap but not shipped.
 - **No streaming subscriptions in the API**: the Beeper Desktop API is request/response. For realtime updates you poll `/v1/chats` or hook into the Beeper Desktop MCP server (advanced).

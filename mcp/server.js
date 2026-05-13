@@ -8,7 +8,7 @@
 const http = require('http');
 
 const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
-const BEEPER_API = process.env.BEEPER_API || 'http://[::1]:23373';
+const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
 const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 
 // ─── beeper api helper ────────────────────────────────────────────

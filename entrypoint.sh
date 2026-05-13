@@ -22,13 +22,18 @@ sleep 1
 echo "[ok] novnc -> http://localhost:6080/vnc.html"
 
 echo "[..] starting beeper desktop"
-/opt/beeper/beepertexts --no-sandbox --disable-gpu --disable-dev-shm-usage 2>&1 &
+# do not pass --disable-gpu: recent beeper builds bail in their crash-reporter
+# init when the gpu process is disabled, leaving a black vnc screen. instead
+# we ship libgl1-mesa-dri so electron falls back to software gl via mesa.
+/opt/beeper/beepertexts --no-sandbox --disable-dev-shm-usage 2>&1 &
 BEEPER_PID=$!
 sleep 5
 
-# beeper api binds to [::1]:23373 only — forward 0.0.0.0:23380 -> [::1]:23373 so docker can expose it
-socat TCP4-LISTEN:23380,fork,reuseaddr TCP6:[::1]:23373 &
-echo "[ok] socat forwarder 0.0.0.0:23380 -> [::1]:23373"
+# beeper api binds to 127.0.0.1:23373 — forward 0.0.0.0:23380 -> 127.0.0.1:23373 so docker can expose it.
+# we used to target [::1]:23373 over ipv6, but some hosts (and containers with ipv6 disabled)
+# can't reach the v6 loopback, so the forwarder silently dropped traffic. ipv4 works everywhere.
+socat TCP4-LISTEN:23380,fork,reuseaddr TCP4:127.0.0.1:23373 &
+echo "[ok] socat forwarder 0.0.0.0:23380 -> 127.0.0.1:23373"
 
 # beeperbox-mcp http transport — wraps the beeper api with a normalized,
 # opinionated tool surface for ai agent runtimes (claude code, cursor,

@@ -20,6 +20,23 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
 - Whatever the first real user issue asks for.
 
+## [0.3.3] — 2026-05-13 `[PATCH]`
+
+Two bugfixes for first-time installs, both reported in [#1](https://github.com/hamr0/beeperbox/issues/1) by [@ccailly](https://github.com/ccailly). No runtime-contract change — MCP tool surface, HTTP endpoints, ports, and schemas are bit-identical to v0.3.2; this is PATCH by the policy above.
+
+### Fixed
+- **Black VNC screen on first boot.** Recent Beeper Desktop builds bail in their crash-reporter init when the GPU process is disabled, leaving Xvfb stuck on the openbox background. Dropped `--disable-gpu` from the Beeper launch flags and added `libgl1-mesa-dri` to the image so Electron has a software GL driver to fall back to. The container still has no real GPU — Mesa's `swrast` software rasterizer handles GL; the only thing that changed is that Beeper's GPU process no longer aborts the renderer.
+- **API unreachable from outside the container.** The socat forwarder dialed `[::1]:23373` over IPv6, which silently dropped traffic on hosts (or container runtimes) where the v6 loopback isn't routable — the `0.0.0.0:23380` listener accepted connections but the forwarder could never complete the upstream leg, so `curl http://localhost:23373/v1/info` from the host hung or reset. Switched both the socat forwarder and the MCP server's default `BEEPER_API` to IPv4 `127.0.0.1:23373`. Beeper Desktop's API listens on both loopback families, so IPv4 is the more portable target.
+
+### Changed
+- `docs/GUIDE.md` troubleshooting probe (`docker exec beeperbox curl -sf http://[::1]:23373/v1/info ...`) updated to use `127.0.0.1` to match the new forwarder target and to work on hosts with IPv6 disabled.
+- `docs/GUIDE.md` "Desktop API binds to `[::1]:23373`" caveat in *Limits* rephrased — the binding is loopback-only, and our forwarder targets it via IPv4 for portability.
+- `beeperbox.context.md` version header bumped to v0.3.3 and the version-compatibility table extended.
+
+### Verified
+- Local amd64 build from a clean cache produces a healthy container in ~15s; `curl http://localhost:23380/v1/info` from inside the container and `curl http://localhost:23373/v1/info` from the host both return 200.
+- noVNC at `http://localhost:6080/vnc.html` now renders the Beeper Desktop login on first boot instead of a black canvas.
+
 ## [0.3.2] — 2026-04-14 `[PATCH]`
 
 Packaging and release-workflow changes only. The running container is bit-identical to v0.3.1; this bump is PATCH by the policy above (no runtime contract changes).

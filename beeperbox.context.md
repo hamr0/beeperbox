@@ -1,7 +1,7 @@
 # beeperbox — Integration Guide
 
 > For AI assistants and developers wiring beeperbox into an agent project.
-> v0.3.1 | Docker (linux/amd64 + linux/arm64) + vanilla Node >= 18 | 0 runtime deps | MIT
+> v0.3.3 | Docker (linux/amd64 + linux/arm64) + vanilla Node >= 18 | 0 runtime deps | Apache-2.0
 >
 > Full human setup walkthrough (noVNC login, token creation, `.env` file, troubleshooting): [docs/GUIDE.md](docs/GUIDE.md)
 
@@ -435,6 +435,9 @@ beeperbox v0.3.x is a POC → early product. Real-world usage notes:
 
 | beeperbox | Beeper Desktop | MCP protocol | Architectures |
 |---|---|---|---|
+| `0.3.3` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
+| `0.3.2` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
+| `0.3.1` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
 | `0.3.0` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
 | `0.2.1` | `4.2.715` | `2025-03-26` | `linux/amd64` |
 | `0.2.0` | `4.2.715` | `2025-03-26` | `linux/amd64` |
