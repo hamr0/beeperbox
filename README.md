@@ -8,8 +8,7 @@
 ```
 
 <p align="center">
-  <a href="https://github.com/hamr0/beeperbox/releases"><img src="https://img.shields.io/github/v/tag/hamr0/beeperbox?sort=semver&label=version&color=2a4f8c" alt="version (auto from latest git tag)"></a>
-  <a href="https://www.npmjs.com/package/beeperbox-mcp"><img src="https://img.shields.io/npm/v/beeperbox-mcp?label=npm%3A%20beeperbox-mcp&color=2a4f8c" alt="npm: beeperbox-mcp"></a>
+  <img src="https://img.shields.io/github/v/tag/hamr0/beeperbox?sort=semver&label=version&color=2a4f8c" alt="version (auto from latest git tag)">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
 </p>
 
@@ -53,7 +52,7 @@ curl -X POST http://localhost:23375 \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-For stdio MCP, point any MCP client at `docker exec -i beeperbox node /opt/mcp/server.js --stdio`, or run the wrapper on the host with `npx -y beeperbox-mcp --stdio` (same server, no `docker exec`; reads `BEEPER_API` + `BEEPER_TOKEN` from env). Works with Claude Code, Cursor, Cline, Continue, [bareagent](https://github.com/hamr0/bareagent), or anything that speaks Model Context Protocol.
+For stdio MCP, point any MCP client at `docker exec -i beeperbox node /opt/mcp/server.js --stdio`. Works with Claude Code, Cursor, Cline, Continue, [bareagent](https://github.com/hamr0/bareagent), or anything that speaks Model Context Protocol.
 
 Done.
 
