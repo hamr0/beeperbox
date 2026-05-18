@@ -177,7 +177,7 @@ Send a message to the bot's own Beeper-native Note to self chat. Auto-resolves t
 **Returns:** `{chat_id, message_id, status: "sent"}`.
 **Use for:** agent self-notes ("processed 5 customer messages"), debug output, scheduled reminders, anything you want recorded but NOT seen by anyone else. The note-to-self chat is excluded from `list_inbox` / `list_unread` / `search_messages`, so messages here will not pollute customer views.
 
-**Routing:** the resolver requires the target chat to live on the Beeper-native matrix account, so self-notes will not accidentally land in a third-party network's saved-messages chat (e.g. Telegram Saved Messages). Falls back to any single-self chat only if no matrix one exists.
+**Routing:** the resolver requires the target chat to live on the Beeper-native matrix account, so self-notes will not accidentally land in a third-party network's saved-messages chat (e.g. Telegram Saved Messages). Falls back to any single-self chat only if no matrix one exists, and writes a warning to stderr when it does — check the container logs (`docker logs beeperbox`) if you suspect routing is going to the wrong chat.
 
 ### `react_to_message`
 

@@ -85,6 +85,11 @@ async function getNoteToSelfChatID() {
     if (!fallback) fallback = c.id;
   }
   if (fallback) {
+    // Defeats the matrix-preferred routing but is better than failing for users
+    // without a Beeper-native account. Log loudly so the behavior isn't silent
+    // — if a user expects matrix-native routing and sees this, something is
+    // misconfigured (matrix bridge offline, account just removed, etc.).
+    process.stderr.write(`[beeperbox-mcp] note_to_self: no Beeper-native matrix chat found; falling back to non-matrix single-self chat ${fallback} — agent self-notes will route to this platform's saved-messages chat\n`);
     noteToSelfChatID = fallback;
     return noteToSelfChatID;
   }

@@ -1000,9 +1000,9 @@ If you need those, put them in front of beeperbox (reverse proxy, governance mid
 - **Single user**: one Beeper account per container. If you need multiple accounts, run multiple containers with different ports and volumes.
 - **Desktop API binds to the loopback interface only** inside the container. beeperbox uses `socat` to forward `0.0.0.0:23380 → 127.0.0.1:23373` so the API is reachable from the host. If Beeper ever adds a flag to bind `0.0.0.0` directly, socat will go away — it is a workaround, not a feature.
 - **WhatsApp on-device bridge** sometimes logs `no bridge event found` warnings during backup. Harmless, ignore.
-- **Not multi-arch yet**: the Docker image is x86_64 only. Raspberry Pi / arm64 support is on the roadmap but not shipped.
+- **Multi-arch image**: `linux/amd64` and `linux/arm64` are published from v0.3.0 onward — Raspberry Pi 4/5, Apple-silicon Docker Desktop, and Oracle Cloud's free ARM tier all pull the right variant automatically.
 - **No streaming subscriptions in the API**: the Beeper Desktop API is request/response. For realtime updates you poll `/v1/chats` or hook into the Beeper Desktop MCP server (advanced).
-- **This is a POC (v0.1.0)**. It works, it is tested end-to-end, but it has not been hardened for production. Running it on a personal VPS for your own agents is fine. Running it as a shared service is not.
+- **Pre-1.0**. Current line is v0.3.x — the MCP tool surface, HTTP API, default ports, and `Chat`/`Message` schemas are usable but not declared stable. See [CHANGELOG.md](../CHANGELOG.md) for the versioning policy and what each bump type guarantees. Running on a personal VPS for your own agents is fine; running as a shared service is not.
 
 ---
 

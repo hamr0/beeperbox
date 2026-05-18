@@ -52,7 +52,21 @@ step "5/5  probe MCP tools/list on http://localhost:${BEEPERBOX_MCP_PORT}"
 mcp_body=$(curl -sf -X POST "http://localhost:${BEEPERBOX_MCP_PORT}" \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}') || fail "MCP server unreachable on :${BEEPERBOX_MCP_PORT}"
-echo "$mcp_body" | grep -q '"list_inbox"' || fail "MCP tools/list missing expected tools — got: $mcp_body"
-pass "MCP tools/list responds with tool registry"
+# Parse JSON and assert each expected tool name appears in result.tools[*].name.
+# Substring grep would pass if "list_inbox" only shows up in a different tool's
+# description, so we walk the registry by structure instead.
+python3 - "$mcp_body" <<'PY' || fail "MCP tools/list missing expected tools — body was: $mcp_body"
+import json, sys
+body = json.loads(sys.argv[1])
+names = {t["name"] for t in body.get("result", {}).get("tools", [])}
+expected = {"list_accounts", "list_inbox", "list_unread", "get_chat", "read_chat",
+            "search_messages", "send_message", "note_to_self", "react_to_message",
+            "archive_chat"}
+missing = expected - names
+if missing:
+    print(f"missing tools: {sorted(missing)}", file=sys.stderr)
+    sys.exit(1)
+PY
+pass "MCP tools/list returns all 10 expected tools by name"
 
 printf '\n\033[1;32mall checks passed\033[0m — POC is healthy\n\n'

@@ -19,8 +19,12 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - **Clean shutdown on `docker stop`.** Entrypoint now traps SIGTERM/SIGINT and forwards to Beeper Desktop, then re-waits in a loop until the child is fully reaped. Previously bash's `wait` returned early on signal delivery and the container exited before Beeper finished its matrix sync flush / sqlite checkpoint, risking partial writes to `beeperbox_config`. Verified empirically — without the trap, child processes survive parent SIGTERM as orphans.
 
 ### Changed
-- **Smoke test now probes the MCP server.** `scripts/smoke-test.sh` adds a 5th step that POSTs `tools/list` to `:23375` and asserts the registry contains expected tools. Catches MCP-server regressions that the previous `/v1/info`-only probe would miss.
+- **Smoke test now probes the MCP server.** `scripts/smoke-test.sh` adds a 5th step that POSTs `tools/list` to `:23375` and walks `result.tools[*].name` via a Python JSON parse, asserting the full set of 10 expected tool names is present. Earlier substring `grep` would have false-positived if a tool was renamed but its old name still appeared in another tool's description — verified by a negative test.
 - **JSON-RPC notification compliance.** A notification (no `id`) with a malformed `jsonrpc` field used to receive an error response; now correctly returns no response per the spec. Pure compliance cleanup — no client behavior change expected.
+- **`note_to_self` fallback is now loud.** If no Beeper-native matrix single-self chat exists and the resolver has to fall back to a non-matrix single-self chat (third-party saved-messages chat), it writes a warning to stderr instead of silently routing self-notes off-platform. Validated against a mock where only a Telegram saved-messages chat exists — fallback now logs `note_to_self: no Beeper-native matrix chat found; falling back to non-matrix single-self chat …`.
+
+### Docs
+- **`docs/GUIDE.md` caveats updated.** Removed stale claims that beeperbox is "POC v0.1.0" and "not multi-arch yet" (current line is v0.3.x; `linux/amd64` and `linux/arm64` have been published since v0.3.0). The Limits section now references the [CHANGELOG](../CHANGELOG.md) versioning policy directly.
 
 ### Planned
 - ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
