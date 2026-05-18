@@ -63,18 +63,30 @@ let noteToSelfChatID = null;
 
 async function getNoteToSelfChatID() {
   if (noteToSelfChatID) return noteToSelfChatID;
-  // Find the Beeper-native Note to self chat — accountID is the user's
-  // primary "hungryserv"-style account, exactly one participant, and that
-  // participant is yourself. Fetch a wide page since note-to-self may not
-  // be at the top of the inbox.
-  const raw = await beeperFetch('/v1/chats?limit=100');
+  // The "single participant who is self" heuristic also matches each platform's
+  // saved-messages chat (Telegram "Saved Messages", WhatsApp "Send to yourself",
+  // etc.). To avoid leaking agent self-notes onto a third-party network, require
+  // the chat live on the Beeper-native matrix account. Fall back to any single-
+  // self chat only if no matrix one exists (preserves prior behavior for users
+  // without a Beeper-native account, with a clearer error if nothing matches).
+  const [accounts, raw] = await Promise.all([
+    getAccountMap(),
+    beeperFetch('/v1/chats?limit=100'),
+  ]);
   const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
+  let fallback = null;
   for (const c of list) {
     const participants = c.participants?.items || [];
-    if (c.participants?.total === 1 && participants[0]?.isSelf === true) {
+    if (c.participants?.total !== 1 || participants[0]?.isSelf !== true) continue;
+    if (accounts[c.accountID]?.network === 'matrix') {
       noteToSelfChatID = c.id;
       return noteToSelfChatID;
     }
+    if (!fallback) fallback = c.id;
+  }
+  if (fallback) {
+    noteToSelfChatID = fallback;
+    return noteToSelfChatID;
   }
   throw rpcError(-32002, 'note-to-self chat not found in top 100 chats — open Beeper Desktop and verify a "Note to self" chat exists');
 }
@@ -159,8 +171,6 @@ function normalizeChat(raw, accounts) {
 }
 
 // ─── tool registry ────────────────────────────────────────────────
-// Phase 1b: one real tool. The other 9 land in phase 2, one at a time,
-// each with its own commit so we can roll back any single regression.
 
 const TOOLS = [
   {
@@ -315,6 +325,8 @@ async function callTool(name, args) {
     case 'read_chat': {
       if (!args.chat_id) throw rpcError(-32602, 'read_chat requires chat_id');
       const limit = Math.min(Math.max(args.limit || 20, 1), 100);
+      // Same Beeper-side minimum-page-size workaround as list_inbox: the API
+      // returns ~25 items regardless of ?limit=, so over-fetch then slice.
       const [accounts, chatRaw, msgRaw] = await Promise.all([
         getAccountMap(),
         beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`),
@@ -441,12 +453,13 @@ function rpcError(code, message) {
 }
 
 async function handleRequest(req) {
-  if (req.jsonrpc !== '2.0') {
-    return { jsonrpc: '2.0', id: req.id ?? null, error: { code: -32600, message: 'jsonrpc must be "2.0"' } };
-  }
-
   // Notifications carry no id; the spec says no response is sent.
   const isNotification = req.id === undefined;
+
+  if (req.jsonrpc !== '2.0') {
+    if (isNotification) return null;
+    return { jsonrpc: '2.0', id: req.id ?? null, error: { code: -32600, message: 'jsonrpc must be "2.0"' } };
+  }
 
   try {
     let result;

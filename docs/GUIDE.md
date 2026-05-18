@@ -493,7 +493,7 @@ beeperbox exposes 10 semantic tools over Model Context Protocol on two interchan
 | `read_chat` | `chat_id` | Array of `Message` (oldest first) | Pull conversation context for the LLM to reason about |
 | `search_messages` | `query` | Array of `Message` | Follow-up lookups, historical context, "what did X say about Y" |
 | `send_message` | `chat_id`, `text` | `{chat_id, message_id, status}` | The headline reply/notify tool |
-| `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves chat ID |
+| `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves to the Beeper-native Note to self chat (won't leak into per-platform saved-messages chats) |
 | `react_to_message` | `chat_id`, `message_id`, `emoji` | `{...status: reacted}` | Lightweight ack, no full reply needed |
 | `archive_chat` | `chat_id` | `{chat_id, archived}` | Clean handled chats out of inbox (closest primitive to mark-as-read that Beeper exposes) |
 

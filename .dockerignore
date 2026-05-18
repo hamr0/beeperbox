@@ -2,6 +2,7 @@
 .gitignore
 .github
 .claude
+.barebrowse
 docs
 scripts
 README.md

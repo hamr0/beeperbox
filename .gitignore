@@ -11,3 +11,7 @@ node_modules/
 .*.swp
 .*.swo
 *~
+
+# local tooling scratch dirs (session/stash state, page snapshots)
+.claude/stash/
+.barebrowse/

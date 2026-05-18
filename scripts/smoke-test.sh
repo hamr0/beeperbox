@@ -10,6 +10,7 @@
 set -e
 
 export BEEPERBOX_HOST_PORT="${BEEPERBOX_HOST_PORT:-23373}"
+export BEEPERBOX_MCP_PORT="${BEEPERBOX_MCP_PORT:-23375}"
 MAX_WAIT="${MAX_WAIT:-180}"
 
 cd "$(dirname "$0")/.."
@@ -42,9 +43,16 @@ while true; do
   sleep 5
 done
 
-step "4/4  probe http://localhost:${BEEPERBOX_HOST_PORT}/v1/info"
+step "4/5  probe http://localhost:${BEEPERBOX_HOST_PORT}/v1/info"
 body=$(curl -sf "http://localhost:${BEEPERBOX_HOST_PORT}/v1/info") || fail "curl failed — API not reachable on :${BEEPERBOX_HOST_PORT}"
 echo "$body" | grep -q '"status":"running"' || fail "/v1/info did not report server running — got: $body"
 pass "/v1/info returns server running"
+
+step "5/5  probe MCP tools/list on http://localhost:${BEEPERBOX_MCP_PORT}"
+mcp_body=$(curl -sf -X POST "http://localhost:${BEEPERBOX_MCP_PORT}" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}') || fail "MCP server unreachable on :${BEEPERBOX_MCP_PORT}"
+echo "$mcp_body" | grep -q '"list_inbox"' || fail "MCP tools/list missing expected tools — got: $mcp_body"
+pass "MCP tools/list responds with tool registry"
 
 printf '\n\033[1;32mall checks passed\033[0m — POC is healthy\n\n'

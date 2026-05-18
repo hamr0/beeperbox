@@ -171,11 +171,13 @@ Send a text message to a chat. Markdown supported.
 
 ### `note_to_self`
 
-Send a message to the bot's own Note to self chat. Auto-resolves the correct chat ID, so no `chat_id` parameter needed.
+Send a message to the bot's own Beeper-native Note to self chat. Auto-resolves the correct chat ID, so no `chat_id` parameter needed.
 
 **Arguments:** `{text: string}`.
 **Returns:** `{chat_id, message_id, status: "sent"}`.
 **Use for:** agent self-notes ("processed 5 customer messages"), debug output, scheduled reminders, anything you want recorded but NOT seen by anyone else. The note-to-self chat is excluded from `list_inbox` / `list_unread` / `search_messages`, so messages here will not pollute customer views.
+
+**Routing:** the resolver requires the target chat to live on the Beeper-native matrix account, so self-notes will not accidentally land in a third-party network's saved-messages chat (e.g. Telegram Saved Messages). Falls back to any single-self chat only if no matrix one exists.
 
 ### `react_to_message`
 
@@ -312,7 +314,7 @@ Density rule of thumb: ~500MB RAM idle + ~800MB active per instance. 1GB VPS fit
 
 **`?limit=N` is lower-bounded.** Beeper's raw API returns ~25 items minimum from `/v1/chats` regardless of the `limit` param. beeperbox's MCP tools slice client-side to honor your requested limit — no workaround needed at the MCP layer.
 
-**Note-to-self detection is heuristic.** A chat is classified as note-to-self when `participants.total === 1` AND `participants.items[0].isSelf === true`. This catches both Beeper-native Note to self and per-platform saved-messages chats (Telegram Saved Messages, WhatsApp "Send to yourself", etc.). If a user has an unusual Beeper setup, some saved-messages chats could leak into `list_inbox`.
+**Note-to-self detection is heuristic for inbox filtering, deterministic for sending.** Inbox-side, a chat is classified as note-to-self when `participants.total === 1` AND `participants.items[0].isSelf === true` — this catches both Beeper-native Note to self and per-platform saved-messages chats (Telegram Saved Messages, WhatsApp "Send to yourself", etc.), so any single-self chat is correctly filtered out of `list_inbox` / `list_unread`. The `note_to_self` write tool is stricter: it requires the resolved chat to live on the Beeper-native matrix account so agent self-notes can't accidentally post into Telegram Saved Messages. If no matrix single-self chat exists (unusual setup), it falls back to any single-self chat rather than failing — open Beeper Desktop and verify the Beeper-native "Note to self" chat exists if you see unexpected routing.
 
 **`send_message` returns Beeper's `pendingMessageID`.** Not a stable delivered ID. If you need confirmation the message was actually delivered (not just queued locally), poll `read_chat` for the new message — Beeper replaces the pending ID with a real one once the bridge acks.
 

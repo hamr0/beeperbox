@@ -59,4 +59,13 @@ echo "=== ready ==="
 echo "  novnc: http://localhost:6080/vnc.html (one-time login)"
 echo "  api:   http://localhost:23373"
 
-wait $BEEPER_PID
+# Forward SIGTERM/SIGINT to Beeper so docker stop triggers a clean shutdown
+# (matrix sync flush, sqlite checkpoint) instead of the 10s SIGKILL fallback.
+# Bash's `wait` does NOT auto-propagate signals to children, so without this
+# trap the container exits but Beeper is killed mid-write.
+trap 'kill -TERM "$BEEPER_PID" 2>/dev/null' TERM INT
+# Loop: bash interrupts `wait` on trap delivery, so a single wait would return
+# before Beeper has finished flushing. Re-wait until the PID is actually gone.
+while kill -0 "$BEEPER_PID" 2>/dev/null; do
+  wait "$BEEPER_PID" 2>/dev/null || true
+done

@@ -14,6 +14,14 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Fixed
+- **`note_to_self` no longer leaks onto third-party networks.** The resolver previously matched the first chat with `participants.total === 1 && isSelf === true`, which also catches each platform's saved-messages chat (Telegram "Saved Messages", WhatsApp "Send to yourself", etc.) — if any of those were more recently active than Beeper-native Note to self, agent self-notes would post there instead. Resolver now requires the chat to live on the Beeper-native matrix account and only falls back to a non-matrix single-self chat when no matrix one exists. Inbox-side `is_note_to_self` filtering is unchanged.
+- **Clean shutdown on `docker stop`.** Entrypoint now traps SIGTERM/SIGINT and forwards to Beeper Desktop, then re-waits in a loop until the child is fully reaped. Previously bash's `wait` returned early on signal delivery and the container exited before Beeper finished its matrix sync flush / sqlite checkpoint, risking partial writes to `beeperbox_config`. Verified empirically — without the trap, child processes survive parent SIGTERM as orphans.
+
+### Changed
+- **Smoke test now probes the MCP server.** `scripts/smoke-test.sh` adds a 5th step that POSTs `tools/list` to `:23375` and asserts the registry contains expected tools. Catches MCP-server regressions that the previous `/v1/info`-only probe would miss.
+- **JSON-RPC notification compliance.** A notification (no `id`) with a malformed `jsonrpc` field used to receive an error response; now correctly returns no response per the spec. Pure compliance cleanup — no client behavior change expected.
+
 ### Planned
 - ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
 - ~~Python client (`beeperbox` on PyPI)~~ — **dropped** for the same reason.
