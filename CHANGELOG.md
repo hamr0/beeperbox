@@ -14,6 +14,13 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Planned
+- Whatever the first real user issue asks for.
+
+## [0.4.0] — 2026-05-18 `[MINOR]`
+
+Bug-fix-heavy release. Tagged MINOR rather than PATCH because two of the fixes change observable runtime behavior an agent may key off of: `note_to_self` now picks a deterministically different chat for some accounts (no longer the first single-self chat), and the entrypoint now propagates SIGTERM so containers exit cleanly under `docker stop`. The MCP tool surface, HTTP endpoints, default ports, and `Chat`/`Message` schemas are unchanged — no client-code edits required.
+
 ### Fixed
 - **`note_to_self` no longer leaks onto third-party networks.** The resolver previously matched the first chat with `participants.total === 1 && isSelf === true`, which also catches each platform's saved-messages chat (Telegram "Saved Messages", WhatsApp "Send to yourself", etc.) — if any of those were more recently active than Beeper-native Note to self, agent self-notes would post there instead. Resolver now requires the chat to live on the Beeper-native matrix account and only falls back to a non-matrix single-self chat when no matrix one exists. Inbox-side `is_note_to_self` filtering is unchanged.
 - **Clean shutdown on `docker stop`.** Entrypoint now traps SIGTERM/SIGINT and forwards to Beeper Desktop, then re-waits in a loop until the child is fully reaped. Previously bash's `wait` returned early on signal delivery and the container exited before Beeper finished its matrix sync flush / sqlite checkpoint, risking partial writes to `beeperbox_config`. Verified empirically — without the trap, child processes survive parent SIGTERM as orphans.
@@ -24,13 +31,15 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - **`note_to_self` fallback is now loud.** If no Beeper-native matrix single-self chat exists and the resolver has to fall back to a non-matrix single-self chat (third-party saved-messages chat), it writes a warning to stderr instead of silently routing self-notes off-platform. Validated against a mock where only a Telegram saved-messages chat exists — fallback now logs `note_to_self: no Beeper-native matrix chat found; falling back to non-matrix single-self chat …`.
 
 ### Docs
-- **`docs/GUIDE.md` caveats updated.** Removed stale claims that beeperbox is "POC v0.1.0" and "not multi-arch yet" (current line is v0.3.x; `linux/amd64` and `linux/arm64` have been published since v0.3.0). The Limits section now references the [CHANGELOG](../CHANGELOG.md) versioning policy directly.
+- **`docs/GUIDE.md` caveats updated.** Removed stale claims that beeperbox is "POC v0.1.0" and "not multi-arch yet" (current line is v0.4.x; `linux/amd64` and `linux/arm64` have been published since v0.3.0). The Limits section now references the [CHANGELOG](../CHANGELOG.md) versioning policy directly.
+- `README.md` version-pin example bumped to `BEEPERBOX_IMAGE_TAG=0.4.0`.
+- `beeperbox.context.md` version header, "v0.x.x is a POC" line, and version-compatibility table updated to v0.4.0.
 
-### Planned
-- ~~Typed Node client (`@beeperbox/node`)~~ — **dropped**. MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
-- ~~Python client (`beeperbox` on PyPI)~~ — **dropped** for the same reason.
-- ~~Multi-tenant per-request token forwarding~~ — **dropped**. Architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
-- Whatever the first real user issue asks for.
+### Dropped paths
+- ~~Typed Node client (`@beeperbox/node`)~~ — MCP is the language-agnostic consumption layer; a Node SDK would duplicate that for a small non-agent audience that can already `fetch()` the raw API in ~5 lines. Revisit if someone files an issue.
+- ~~Python client (`beeperbox` on PyPI)~~ — same reason.
+- ~~Multi-tenant per-request token forwarding~~ — architecturally impossible: Beeper Desktop logs in as one user at a time. Run one container per account (documented in GUIDE as of v0.2.1).
+- ~~Standalone npm package (`beeperbox-mcp`)~~ — beeperbox ships as a Docker image; `mcp/server.js` is the container's MCP interface at `/opt/mcp/server.js`. Republishing as an npm wrapper duplicates the distribution channel without serving a real audience (the README's target user runs the container, not a host-side npm wrapper). Reverted from master at `670f8c9`.
 
 ## [0.3.3] — 2026-05-13 `[PATCH]`
 

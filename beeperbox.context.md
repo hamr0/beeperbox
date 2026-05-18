@@ -1,7 +1,7 @@
 # beeperbox — Integration Guide
 
 > For AI assistants and developers wiring beeperbox into an agent project.
-> v0.3.3 | Docker (linux/amd64 + linux/arm64) + vanilla Node >= 18 | 0 runtime deps | Apache-2.0
+> v0.4.0 | Docker (linux/amd64 + linux/arm64) + vanilla Node >= 18 | 0 runtime deps | Apache-2.0
 >
 > Full human setup walkthrough (noVNC login, token creation, `.env` file, troubleshooting): [docs/GUIDE.md](docs/GUIDE.md)
 
@@ -424,7 +424,7 @@ Both run in the same `mcp/server.js` file. The transport is picked at startup: d
 
 ## Production usage
 
-beeperbox v0.3.x is a POC → early product. Real-world usage notes:
+beeperbox v0.4.x is a POC → early product. Real-world usage notes:
 
 - **Single tenant.** One Beeper account per container. For multi-tenant deployments, run one container per user with separate volumes and ports.
 - **No rate limiting.** Your code is responsible for pacing. Beeper's underlying bridges have their own rate limits (WhatsApp is the strictest — expect 429s under heavy sending).
@@ -437,6 +437,7 @@ beeperbox v0.3.x is a POC → early product. Real-world usage notes:
 
 | beeperbox | Beeper Desktop | MCP protocol | Architectures |
 |---|---|---|---|
+| `0.4.0` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
 | `0.3.3` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
 | `0.3.2` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
 | `0.3.1` | `4.2.715` (built into image) | `2025-03-26` | `linux/amd64`, `linux/arm64` |
