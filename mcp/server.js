@@ -11,6 +11,63 @@ const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
 const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
 const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 
+// ─── http transport hardening ─────────────────────────────────────
+// The HTTP transport is the network-exposed surface (stdio is local-only).
+// Three guards, all configurable so they don't break the documented
+// loopback publish or a reverse-proxy deployment:
+//   MCP_AUTH_TOKEN    — if set, every HTTP request must send
+//                       `Authorization: Bearer <token>`; unset = open
+//                       (back-compat; relies on the loopback publish).
+//   MCP_ALLOWED_HOSTS — Host/Origin allowlist (comma-separated). Blocks
+//                       DNS-rebinding and cross-origin browser access.
+//                       Defaults to loopback; set it for reverse proxies.
+//   MCP_MAX_BODY      — max request body bytes (default 1 MiB) so a large
+//                       POST can't grow the in-memory buffer unbounded.
+// The listener stays bound to 0.0.0.0 ON PURPOSE: a Docker published port
+// is unreachable if the in-container process binds 127.0.0.1, so loopback
+// binding here would break `127.0.0.1:23375:23375`. Auth + Host/Origin
+// checks are the defense, not the bind address.
+const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || '';
+const MCP_ALLOWED_HOSTS = new Set(
+  (process.env.MCP_ALLOWED_HOSTS || 'localhost,127.0.0.1,::1,[::1]')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+);
+const MCP_MAX_BODY = parseInt(process.env.MCP_MAX_BODY || String(1024 * 1024), 10);
+
+// Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
+// "[::1]:23375" -> "[::1]").
+function hostFromHeader(value) {
+  if (!value) return '';
+  const h = value.trim().toLowerCase();
+  if (h.startsWith('[')) return h.slice(0, h.indexOf(']') + 1) || h;
+  const c = h.indexOf(':');
+  return c >= 0 ? h.slice(0, c) : h;
+}
+
+// Returns null when the request may proceed, else { status, message }.
+function httpGuard(req) {
+  // DNS-rebinding guard: the browser sends the attacker's domain as Host.
+  const host = hostFromHeader(req.headers.host);
+  if (host && !MCP_ALLOWED_HOSTS.has(host)) {
+    return { status: 403, message: `host not allowed: ${host}` };
+  }
+  // Cross-origin browser guard: native clients (curl, MCP runtimes) send no
+  // Origin, so this only ever rejects browser-initiated cross-site requests.
+  const origin = req.headers.origin;
+  if (origin) {
+    let oh;
+    try { oh = new URL(origin).hostname.toLowerCase(); } catch { oh = null; }
+    if (!oh || !(MCP_ALLOWED_HOSTS.has(oh) || MCP_ALLOWED_HOSTS.has(`[${oh}]`))) {
+      return { status: 403, message: `origin not allowed: ${origin}` };
+    }
+  }
+  // Bearer-token guard: only enforced when a token is configured.
+  if (MCP_AUTH_TOKEN && req.headers.authorization !== `Bearer ${MCP_AUTH_TOKEN}`) {
+    return { status: 401, message: 'unauthorized' };
+  }
+  return null;
+}
+
 // ─── beeper api helper ────────────────────────────────────────────
 
 async function beeperFetch(path, opts = {}) {
@@ -521,9 +578,27 @@ function startHttpTransport() {
       return;
     }
 
+    const denied = httpGuard(req);
+    if (denied) {
+      res.writeHead(denied.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: denied.message } }));
+      return;
+    }
+
     let body = '';
-    req.on('data', (chunk) => { body += chunk; });
+    let aborted = false;
+    req.on('data', (chunk) => {
+      if (aborted) return;
+      body += chunk;
+      if (body.length > MCP_MAX_BODY) {
+        aborted = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: `request body exceeds ${MCP_MAX_BODY} bytes` } }));
+        req.destroy();
+      }
+    });
     req.on('end', async () => {
+      if (aborted) return;
       let parsed;
       try {
         parsed = JSON.parse(body);
@@ -547,6 +622,8 @@ function startHttpTransport() {
     console.log(`[beeperbox-mcp] listening on http://0.0.0.0:${PORT}`);
     console.log(`[beeperbox-mcp] beeper api: ${BEEPER_API}`);
     console.log(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET (set BEEPER_TOKEN env var)'}`);
+    console.log(`[beeperbox-mcp] http auth: ${MCP_AUTH_TOKEN ? 'required (MCP_AUTH_TOKEN set)' : 'OPEN — set MCP_AUTH_TOKEN to require a bearer token'}`);
+    console.log(`[beeperbox-mcp] allowed hosts: ${[...MCP_ALLOWED_HOSTS].join(', ')}`);
   });
 }
 
