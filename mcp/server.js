@@ -529,7 +529,7 @@ async function handleRequest(req) {
       case 'initialize':
         result = {
           protocolVersion: '2025-03-26',
-          serverInfo: { name: 'beeperbox', version: '0.2.0-poc' },
+          serverInfo: { name: 'beeperbox', version: '0.5.0' },
           capabilities: { tools: {} },
         };
         break;
