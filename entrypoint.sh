@@ -13,7 +13,19 @@ openbox &
 sleep 1
 echo "[ok] openbox"
 
-x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &
+# VNC auth: set VNC_PASSWORD to require a password on the noVNC/VNC connection
+# (x11vnc serves RFB security type 2 instead of None). Unset keeps the
+# password-less behavior, which is safe only while :6080 stays loopback-only
+# (the documented compose default). Mirrors the opt-in MCP_AUTH_TOKEN pattern.
+if [ -n "${VNC_PASSWORD:-}" ]; then
+  x11vnc -storepasswd "$VNC_PASSWORD" /tmp/.vncpass >/dev/null 2>&1
+  VNC_AUTH=(-rfbauth /tmp/.vncpass)
+  echo "[ok] x11vnc auth: password required (VNC_PASSWORD set)"
+else
+  VNC_AUTH=(-nopw)
+  echo "[!!] x11vnc auth: OPEN — no VNC_PASSWORD set; keep :6080 loopback-only"
+fi
+x11vnc -display :99 -forever "${VNC_AUTH[@]}" -shared -rfbport 5900 &
 sleep 1
 echo "[ok] x11vnc"
 
