@@ -1,0 +1,58 @@
+# PRD — MCP HTTP Transport Hardening
+
+> Status: implemented (code), pending container/CI functional test and release tagging.
+> Scope: `mcp/server.js`, `docker-compose.yml`. No changes to the MCP tool surface, schemas, ports, or default behavior.
+
+## Problem
+
+The MCP HTTP transport on `:23375` executes any well-formed JSON-RPC request from anyone who can reach the port, using the container's `BEEPER_TOKEN`. The only control was the `127.0.0.1:` publish in `docker-compose.yml` — a single load-bearing layer that the compose comments themselves invite users to remove ("To expose publicly … drop the `127.0.0.1` prefix"). Three concrete weaknesses were confirmed empirically against the running server:
+
+1. **No authentication (H1).** Unauthenticated `tools/list` returned the full registry; unauthenticated `tools/call` reached dispatch and only failed *inside* the handler at the upstream call — i.e., with a real token it would have read/sent across every connected network.
+2. **No `Origin`/`Host` validation (H2).** A cross-origin browser request (`text/plain` body = no CORS preflight) was parsed and dispatched; a DNS-rebinding attack could then read responses. The server accepted any `Origin` and any `Host`.
+3. **Unbounded request body (M1).** A 12 MB POST returned `200` after fully buffering into memory — a trivial memory-exhaustion vector.
+
+## Goals
+
+- Make the HTTP transport safe to expose beyond loopback **without** breaking the documented loopback-publish or reverse-proxy deployments.
+- Close the browser-driven attack surface (DNS rebinding / cross-origin) **by default**, with no configuration required.
+- Bound request memory.
+- Zero breaking change: unset configuration ⇒ identical prior behavior; stdio transport untouched; `smoke-test.sh` still passes.
+
+## Non-goals / explicitly rejected
+
+- **Binding the listener to `127.0.0.1`.** Rejected after empirical confirmation that a process bound to loopback *inside* a container is unreachable through a Docker published port (`127.0.0.1:23375:23375` DNATs to the container interface). The bind stays `0.0.0.0`; auth + Host/Origin checks are the defense.
+- **Binding the socat API forwarder to loopback.** Same Docker-publish constraint (`23380` is the published API port). No change.
+- **VNC password (H3)** and **AppImage checksum pinning (M2)** — real findings, deferred (see Open items).
+
+## Requirements
+
+| ID | Requirement |
+|----|-------------|
+| R1 | `MCP_AUTH_TOKEN` (optional): when set, every HTTP request must send `Authorization: Bearer <token>`; otherwise `401`. Unset ⇒ no auth enforced. |
+| R2 | `Host` header validated against an allowlist on every request; non-match ⇒ `403`. (DNS-rebinding defense.) Always on. |
+| R3 | `Origin` header, when present, validated against the same allowlist; non-match ⇒ `403`. Absent `Origin` (native clients) ⇒ allowed. |
+| R4 | `MCP_ALLOWED_HOSTS` (optional, comma-separated) overrides the allowlist; default `localhost,127.0.0.1,::1,[::1]`. Empty string ⇒ default. |
+| R5 | `MCP_MAX_BODY` (optional, bytes, default 1 MiB): request body exceeding the cap aborts `413` and the socket is destroyed; no double-response. |
+| R6 | stdio transport unchanged; guards apply to HTTP only. |
+| R7 | Env vars plumbed through `docker-compose.yml` (Compose only forwards listed vars into the container). |
+| R8 | Startup banner reflects auth posture and active allowlist. |
+
+## Acceptance criteria (verified locally, before/after)
+
+| Case | Expected | Result |
+|------|----------|--------|
+| No token, plain localhost `tools/list` (smoke-test path) | `200` + registry | ✅ |
+| `Origin: https://evil.example` | `403` | ✅ |
+| `Host: evil.example` (DNS-rebind) | `403` | ✅ |
+| `Origin: http://localhost:3000` | `200` | ✅ |
+| 12 MB body | `413` (was `200`) | ✅ |
+| `MCP_AUTH_TOKEN` set, no auth header | `401` | ✅ |
+| `MCP_AUTH_TOKEN` set, wrong token | `401` | ✅ |
+| `MCP_AUTH_TOKEN` set, correct token | `200` | ✅ |
+| Empty `MCP_ALLOWED_HOSTS` env | falls back to loopback default | ✅ |
+
+## Open items / follow-up
+
+- **H3 — VNC `-nopw`:** add `x11vnc -rfbauth` from an env-supplied password; requires booting the container's X stack to verify the noVNC login flow before merging.
+- **M2 — AppImage integrity:** pin/verify a checksum or signature for the Beeper Desktop download, or document the trust assumption.
+- **CI functional test:** the existing build job only assembles the image and the smoke test needs an interactive Beeper login. A standalone job that runs `node /opt/mcp/server.js` in the built image and replays the guard matrix above would cover these changes in CI without a Beeper account.

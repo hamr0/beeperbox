@@ -1,0 +1,135 @@
+name: mcp-test
+
+# Functional test for the MCP server (mcp/server.js) as it actually ships in
+# the image — without needing a logged-in Beeper account.
+#
+# The full smoke test (scripts/smoke-test.sh) needs an interactive Beeper
+# login via noVNC to reach (healthy), so it can't run unattended. This job
+# instead builds the real image and runs ONLY the MCP server standalone
+# (`--entrypoint node /opt/mcp/server.js`), then replays an HTTP assertion
+# matrix. Everything the MCP HTTP transport does *before* it calls the Beeper
+# API — protocol dispatch, tools/list, and the auth / Host / Origin / body
+# guards — is exercised here. Tool calls that hit Beeper are out of scope
+# (they need a real account; that's what smoke-test.sh covers manually).
+#
+# Triggers:
+#   - workflow_dispatch  -> run on demand ("trigger as needed")
+#   - pull_request       -> auto-run when MCP-relevant files change
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'mcp/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/mcp-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-guard-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # amd64 only: the MCP server is arch-independent Node logic, so there's
+      # no value in a QEMU arm64 build here. Load the image locally so we can
+      # `docker run` it. GHA cache is shared with release.yml's builds.
+      - name: Build image (amd64, load locally)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: beeperbox:mcp-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start MCP server — open mode (no MCP_AUTH_TOKEN)
+        run: |
+          docker run -d --name mcp-open -p 23375:23375 \
+            --entrypoint node beeperbox:mcp-test /opt/mcp/server.js
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null -X POST http://127.0.0.1:23375 \
+                 -d '{"jsonrpc":"2.0","id":0,"method":"tools/list"}'; then
+              echo "MCP server ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MCP server did not become ready"; docker logs mcp-open; exit 1
+
+      - name: Assert MCP contract — all 10 tools present
+        run: |
+          # jq is preinstalled on ubuntu-latest; walk result.tools[].name by
+          # structure (a substring grep would false-positive on tool names that
+          # appear inside another tool's description).
+          names=$(curl -s -X POST http://127.0.0.1:23375 \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | jq -r '.result.tools[].name')
+          fail=0
+          for t in list_accounts list_inbox list_unread get_chat read_chat \
+                   search_messages send_message note_to_self react_to_message archive_chat; do
+            if echo "$names" | grep -qx "$t"; then echo "PASS: $t present"; else echo "FAIL: $t missing"; fail=1; fi
+          done
+          exit $fail
+
+      - name: Assert hardening guard matrix — open mode
+        run: |
+          U=http://127.0.0.1:23375
+          fail=0
+          assert() { # desc expected actual
+            if [ "$2" = "$3" ]; then echo "PASS: $1 ($3)"; else echo "FAIL: $1 — expected $2 got $3"; fail=1; fi
+          }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          assert "no-token localhost tools/list -> 200 (back-compat)" 200 \
+            "$(code -X POST $U -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
+          assert "cross-origin (bad Origin) -> 403" 403 \
+            "$(code -X POST $U -H 'Origin: https://evil.example' -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')"
+          assert "DNS-rebind (bad Host) -> 403" 403 \
+            "$(code -X POST $U -H 'Host: evil.example' -d '{"jsonrpc":"2.0","id":4,"method":"tools/list"}')"
+          assert "allowed Origin (localhost:3000) -> 200" 200 \
+            "$(code -X POST $U -H 'Origin: http://localhost:3000' -d '{"jsonrpc":"2.0","id":5,"method":"tools/list"}')"
+          { printf '{"jsonrpc":"2.0","id":6,"method":"tools/list","pad":"'; head -c 12000000 /dev/zero | tr '\0' 'A'; printf '"}'; } > /tmp/big.json
+          assert "12MB body -> 413 (body cap)" 413 \
+            "$(code -X POST $U -H 'Content-Type: application/json' --data-binary @/tmp/big.json)"
+          exit $fail
+
+      - name: Start MCP server — auth mode (MCP_AUTH_TOKEN set)
+        run: |
+          docker run -d --name mcp-auth -p 23376:23375 \
+            -e MCP_AUTH_TOKEN=ci-secret \
+            --entrypoint node beeperbox:mcp-test /opt/mcp/server.js
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null -X POST http://127.0.0.1:23376 \
+                 -H 'Authorization: Bearer ci-secret' \
+                 -d '{"jsonrpc":"2.0","id":0,"method":"tools/list"}'; then
+              echo "auth-mode MCP server ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "auth-mode MCP server did not become ready"; docker logs mcp-auth; exit 1
+
+      - name: Assert bearer-token enforcement
+        run: |
+          U=http://127.0.0.1:23376
+          fail=0
+          assert() { if [ "$2" = "$3" ]; then echo "PASS: $1 ($3)"; else echo "FAIL: $1 — expected $2 got $3"; fail=1; fi; }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          assert "no auth header -> 401" 401 \
+            "$(code -X POST $U -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
+          assert "wrong token -> 401" 401 \
+            "$(code -X POST $U -H 'Authorization: Bearer nope' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
+          assert "correct token -> 200" 200 \
+            "$(code -X POST $U -H 'Authorization: Bearer ci-secret' -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')"
+          exit $fail
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "=== mcp-open ==="; docker logs mcp-open 2>&1 | tail -50 || true
+          echo "=== mcp-auth ==="; docker logs mcp-auth 2>&1 | tail -50 || true

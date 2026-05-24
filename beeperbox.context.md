@@ -287,6 +287,18 @@ Tool errors are returned as JSON-RPC error objects, not thrown. The LLM should r
 - **One container, one Beeper account, any number of tokens.** Each token can have its own scope (read-only or read + write), and you can revoke them individually from Beeper Desktop's Approved Connections panel.
 - Token creation: **Settings → Developers → Approved Connections → +** with `expiry: never`. See [docs/GUIDE.md](docs/GUIDE.md) for the full UI walkthrough.
 
+### MCP HTTP transport hardening
+
+`BEEPER_TOKEN` authenticates beeperbox *to Beeper* — it is **not** a credential callers present to the MCP HTTP transport. By default the HTTP transport on `:23375` accepts any well-formed request and relies on the `127.0.0.1` publish to keep it local. Three optional env vars harden that surface (all unset = prior behavior; the stdio transport is local-only and unaffected):
+
+| Env var | Effect | Default |
+|---|---|---|
+| `MCP_AUTH_TOKEN` | When set, every HTTP request must send `Authorization: Bearer <token>` or get `401`. | unset (open) |
+| `MCP_ALLOWED_HOSTS` | Comma-separated `Host`/`Origin` allowlist. Blocks DNS-rebinding (`403` on a non-allowlisted `Host`) and cross-origin browser calls (`403` on a non-allowlisted `Origin`). Set this to your hostname when running behind a reverse proxy. | `localhost,127.0.0.1,::1,[::1]` |
+| `MCP_MAX_BODY` | Max request body bytes; larger bodies abort `413`. | `1048576` (1 MiB) |
+
+The listener stays bound to `0.0.0.0` inside the container on purpose — a Docker published port is unreachable if the in-container process binds `127.0.0.1`. Auth + Host/Origin validation are the defense, not the bind address. For an agent that reaches the HTTP transport across hosts, set `MCP_AUTH_TOKEN` and send it as a bearer header.
+
 ### Read-only vs read-write tokens
 
 Beeper's token creation UI has an **"Allow sensitive actions"** toggle that gates write operations — you do not need a special beeperbox flag for this, the scope is enforced inside Beeper Desktop itself.
@@ -414,7 +426,7 @@ No N+1 chat fetches — search returns the chat metadata inline.
 |---|---|---|
 | **Default?** | Yes — always on via entrypoint | No — on demand |
 | **Where server lives** | Container background process on port 23375 | Spawned per-client via `docker exec -i` |
-| **Auth** | Shared `BEEPER_TOKEN` env | Same (inherited from container) |
+| **Auth** | Optional `MCP_AUTH_TOKEN` bearer + Host/Origin allowlist (see Auth model) | Local-only; inherits container env |
 | **Multi-client** | Many concurrent clients fine | One server per client process |
 | **Works across hosts** | Yes (expose the port) | No (requires `docker exec`) |
 | **Latency** | ~2ms local loopback | ~50ms process spawn + steady-state low |
@@ -431,7 +443,7 @@ beeperbox v0.4.x is a POC → early product. Real-world usage notes:
 - **No message delivery guarantees.** `send_message` returns a `pendingMessageID` immediately — actual delivery depends on the bridge. Poll `read_chat` or wait a few seconds before reacting to assume success.
 - **Persistent login.** The container's `/root/.config` volume holds the Beeper Desktop session. Back it up if you care about not re-logging in.
 - **Restart behavior.** The compose file sets `restart: unless-stopped` + a healthcheck that probes through the socat forwarder. Process death triggers restart immediately; API hangs are caught by the healthcheck within ~100s.
-- **Security.** Published ports are bound to `127.0.0.1` only by default. For remote access use SSH tunneling, Tailscale/Wireguard, or a TLS reverse proxy with auth. See [docs/GUIDE.md](docs/GUIDE.md) for patterns.
+- **Security.** Published ports are bound to `127.0.0.1` only by default. For remote access use SSH tunneling, Tailscale/Wireguard, or a TLS reverse proxy with auth. The MCP HTTP transport additionally validates `Host`/`Origin` (DNS-rebinding defense, always on) and can require a bearer token via `MCP_AUTH_TOKEN` — set it before exposing `:23375` beyond loopback. noVNC (`:6080`) still has no password and must stay loopback-only. See [docs/GUIDE.md](docs/GUIDE.md) for patterns.
 
 ## Version compatibility
 

@@ -35,6 +35,15 @@ services:
       # raw API on :23373 is reachable (and even that needs the token
       # for everything except /v1/info).
       BEEPER_TOKEN: ${BEEPER_TOKEN:-}
+      # Optional bearer token for the MCP HTTP transport (:23375). When set,
+      # every MCP HTTP request must send `Authorization: Bearer <token>`.
+      # Leave empty to keep the transport open and rely on the loopback
+      # publish above. The stdio transport (docker exec -i … --stdio) is
+      # local-only and unaffected. Host/Origin are always validated against
+      # loopback to block DNS-rebinding; set MCP_ALLOWED_HOSTS for a reverse
+      # proxy in front (e.g. MCP_ALLOWED_HOSTS=mcp.example.com).
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'

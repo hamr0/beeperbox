@@ -14,6 +14,24 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Security
+- **MCP HTTP transport gains optional bearer auth + always-on DNS-rebinding protection.** The HTTP transport on `:23375` previously executed any well-formed JSON-RPC request from anyone who could reach the port, with the user's `BEEPER_TOKEN` — the only thing standing between a caller and read/send across every connected network was the `127.0.0.1:` publish in `docker-compose.yml`. Two guards now run on every HTTP request (stdio transport is local-only and unaffected):
+  - **`Origin` / `Host` validation** (always on). A `Host` header outside the allowlist (`localhost`, `127.0.0.1`, `::1`, `[::1]` by default) is rejected `403` — this is the DNS-rebinding defense, since a rebound browser request carries the attacker's domain as `Host`. A cross-origin browser request (any `Origin` outside the allowlist) is likewise rejected `403`. Native clients (curl, MCP runtimes) send no `Origin` and a loopback `Host`, so they are unaffected. Set `MCP_ALLOWED_HOSTS` (comma-separated) when terminating a reverse proxy in front.
+  - **Bearer token** (opt-in). Set `MCP_AUTH_TOKEN` and every HTTP request must carry `Authorization: Bearer <token>` or get `401`. Left unset, the transport stays open for back-compat and relies on the loopback publish.
+  - **Why the listener still binds `0.0.0.0`:** Docker published ports DNAT to the container's interface — a process bound to `127.0.0.1` *inside* the container is unreachable through `127.0.0.1:23375:23375`. Binding loopback would silently break MCP access, so the bind is deliberately unchanged; auth + Host/Origin checks are the defense, not the bind address. (An earlier proposed "default to loopback bind" fix was rejected after empirically confirming it breaks the published port.)
+- **Request body cap on the MCP HTTP transport.** A POST body now aborts with `413` once it exceeds `MCP_MAX_BODY` bytes (default 1 MiB) instead of buffering unbounded into memory — closes a trivial memory-exhaustion vector (a 12 MB body previously returned `200` after fully buffering).
+
+### Added
+- Three MCP HTTP transport env vars, all optional and back-compat (unset = prior behavior): `MCP_AUTH_TOKEN` (require a bearer token), `MCP_ALLOWED_HOSTS` (Host/Origin allowlist for reverse-proxy deployments), `MCP_MAX_BODY` (request body cap in bytes). Plumbed through `docker-compose.yml`. Startup banner now prints the auth posture (`OPEN` vs `required`) and the active allowed-hosts list.
+
+### Verified
+- Validated against the running server (`node mcp/server.js`) with a live curl matrix, before/after: unauthenticated `tools/list` → served the full registry **before**, now still `200` when no token is set (back-compat / smoke-test path preserved); `Origin: https://evil.example` → `403`; `Host: evil.example` → `403`; `Origin: http://localhost:3000` → `200`; 12 MB body → `413` (was `200`); with `MCP_AUTH_TOKEN` set, missing/wrong token → `401`, correct token → `200`. Empty `MCP_ALLOWED_HOSTS` (as Compose passes when unset) correctly falls back to the loopback default.
+- **Not yet exercised in a built container / CI** — these are pure `server.js` logic changes covered by the local HTTP matrix above; the existing `scripts/smoke-test.sh` only probes unauthenticated `tools/list` (still passes) and the CI build doesn't run the MCP server functionally.
+
+### Still open (validated, not fixed)
+- **VNC has no password** (`entrypoint.sh:16`, `x11vnc … -nopw`). Real finding, deliberately not patched in this pass: the fix needs the container's X stack booted to verify, and a botched `-rfbauth` change risks locking out the one-time noVNC login. Tracked for a follow-up that can be tested end-to-end.
+- **Beeper AppImage fetched at build with no checksum/signature** (`Dockerfile`) — supply-chain note; deferred.
+
 ### Planned
 - Whatever the first real user issue asks for.
 
