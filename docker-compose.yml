@@ -44,6 +44,11 @@ services:
       # proxy in front (e.g. MCP_ALLOWED_HOSTS=mcp.example.com).
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      # Optional password for the noVNC/VNC session (:6080). When set, x11vnc
+      # requires VNC authentication instead of serving an open session. Leave
+      # empty to keep the password-less one-time-login flow (safe only while
+      # :6080 stays loopback-only, the default above).
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'

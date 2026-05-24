@@ -1,7 +1,7 @@
 # PRD — MCP HTTP Transport Hardening
 
-> Status: implemented (code), pending container/CI functional test and release tagging.
-> Scope: `mcp/server.js`, `docker-compose.yml`. No changes to the MCP tool surface, schemas, ports, or default behavior.
+> Status: MCP hardening + VNC auth (H3) implemented and CI-tested (`mcp-test`, `vnc-test`); pending release tagging.
+> Scope: `mcp/server.js`, `entrypoint.sh`, `docker-compose.yml`, `scripts/vnc-auth-probe.py`, CI workflows. No changes to the MCP tool surface, schemas, ports, or default behavior.
 
 ## Problem
 
@@ -51,8 +51,16 @@ The MCP HTTP transport on `:23375` executes any well-formed JSON-RPC request fro
 | `MCP_AUTH_TOKEN` set, correct token | `200` | ✅ |
 | Empty `MCP_ALLOWED_HOSTS` env | falls back to loopback default | ✅ |
 
+## Addendum — VNC authentication (H3)
+
+The noVNC/x11vnc session on `:6080` granted full control of the Beeper Desktop GUI (and the API token reachable through it) with no password (`x11vnc … -nopw`).
+
+- **R-VNC1:** `VNC_PASSWORD` (optional): when set, the entrypoint runs `x11vnc -storepasswd` and serves `-rfbauth` so the RFB connection requires VNC authentication; unset keeps `-nopw` (back-compat). Plumbed through `docker-compose.yml`; entrypoint prints `required`/`OPEN` at startup.
+- **Acceptance (verified locally in `debian:12-slim` and in CI `vnc-test`):** with `VNC_PASSWORD` unset the server offers RFB security type **None (1)**; with it set it offers **VNC auth (2)** and **not** None. `bash -n entrypoint.sh` passes; a grep guard in `vnc-test.yml` fails if the `VNC_PASSWORD`/`-rfbauth`/`-nopw` wiring is removed (anti-drift).
+- Listener/port behavior unchanged; this only changes the RFB security type offered.
+
 ## Open items / follow-up
 
-- **H3 — VNC `-nopw`:** add `x11vnc -rfbauth` from an env-supplied password; requires booting the container's X stack to verify the noVNC login flow before merging.
 - **M2 — AppImage integrity:** pin/verify a checksum or signature for the Beeper Desktop download, or document the trust assumption.
-- **CI functional test:** the existing build job only assembles the image and the smoke test needs an interactive Beeper login. A standalone job that runs `node /opt/mcp/server.js` in the built image and replays the guard matrix above would cover these changes in CI without a Beeper account.
+- ~~**H3 — VNC `-nopw`**~~ — done (see Addendum above).
+- ~~**CI functional test**~~ — done: `mcp-test.yml` (MCP guard matrix in the built image) and `vnc-test.yml` (RFB security-type probe), both `workflow_dispatch` + path-scoped `pull_request`.

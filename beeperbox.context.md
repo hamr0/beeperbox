@@ -443,7 +443,7 @@ beeperbox v0.4.x is a POC → early product. Real-world usage notes:
 - **No message delivery guarantees.** `send_message` returns a `pendingMessageID` immediately — actual delivery depends on the bridge. Poll `read_chat` or wait a few seconds before reacting to assume success.
 - **Persistent login.** The container's `/root/.config` volume holds the Beeper Desktop session. Back it up if you care about not re-logging in.
 - **Restart behavior.** The compose file sets `restart: unless-stopped` + a healthcheck that probes through the socat forwarder. Process death triggers restart immediately; API hangs are caught by the healthcheck within ~100s.
-- **Security.** Published ports are bound to `127.0.0.1` only by default. For remote access use SSH tunneling, Tailscale/Wireguard, or a TLS reverse proxy with auth. The MCP HTTP transport additionally validates `Host`/`Origin` (DNS-rebinding defense, always on) and can require a bearer token via `MCP_AUTH_TOKEN` — set it before exposing `:23375` beyond loopback. noVNC (`:6080`) still has no password and must stay loopback-only. See [docs/GUIDE.md](docs/GUIDE.md) for patterns.
+- **Security.** Published ports are bound to `127.0.0.1` only by default. For remote access use SSH tunneling, Tailscale/Wireguard, or a TLS reverse proxy with auth. The MCP HTTP transport additionally validates `Host`/`Origin` (DNS-rebinding defense, always on) and can require a bearer token via `MCP_AUTH_TOKEN` — set it before exposing `:23375` beyond loopback. noVNC (`:6080`) can require a password via `VNC_PASSWORD` (unset = password-less, in which case it must stay loopback-only). See [docs/GUIDE.md](docs/GUIDE.md) for patterns.
 
 ## Version compatibility
 
