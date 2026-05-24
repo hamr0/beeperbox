@@ -14,6 +14,13 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Planned
+- Whatever the first real user issue asks for.
+
+## [0.5.0] — 2026-05-24 `[MINOR]`
+
+Security-hardening release — the full audit punchlist (3 HIGH plus the actionable MEDIUM/LOW) closed out. All new behavior is opt-in and backward compatible, with **one exception called out per the versioning policy**: the MCP HTTP transport now validates the `Host`/`Origin` header on every request against a loopback allowlist (the DNS-rebinding defense). Clients reaching `:23375` via `127.0.0.1`/`localhost` — i.e. the published-port default — are unaffected; anyone fronting it with a custom hostname (a reverse proxy) must now set `MCP_ALLOWED_HOSTS`. The MCP tool surface, `Chat`/`Message` schemas, and default ports are unchanged — no client-code edits required otherwise.
+
 ### Security
 - **MCP HTTP transport gains optional bearer auth + always-on DNS-rebinding protection.** The HTTP transport on `:23375` previously executed any well-formed JSON-RPC request from anyone who could reach the port, with the user's `BEEPER_TOKEN` — the only thing standing between a caller and read/send across every connected network was the `127.0.0.1:` publish in `docker-compose.yml`. Two guards now run on every HTTP request (stdio transport is local-only and unaffected):
   - **`Origin` / `Host` validation** (always on). A `Host` header outside the allowlist (`localhost`, `127.0.0.1`, `::1`, `[::1]` by default) is rejected `403` — this is the DNS-rebinding defense, since a rebound browser request carries the attacker's domain as `Host`. A cross-origin browser request (any `Origin` outside the allowlist) is likewise rejected `403`. Native clients (curl, MCP runtimes) send no `Origin` and a loopback `Host`, so they are unaffected. Set `MCP_ALLOWED_HOSTS` (comma-separated) when terminating a reverse proxy in front.
@@ -39,9 +46,6 @@ All HIGH findings (H1 auth, H2 DNS-rebind/Origin, H3 VNC password) and the actio
 - The default (auto-updating) AppImage download is TLS-authenticated only — Beeper publishes no independent signature; use `BEEPER_VERSION` + `BEEPER_SHA256` for a verified pinned build.
 - In-container listeners bind `0.0.0.0` because Docker published ports require it; auth + Host/Origin validation + the loopback publish are the defense, not the bind address.
 - The `-32001` error passes the upstream Beeper body verbatim by design, to help the agent self-correct (the consumer is the agent, not a browser; the token is never echoed).
-
-### Planned
-- Whatever the first real user issue asks for.
 
 ## [0.4.0] — 2026-05-18 `[MINOR]`
 

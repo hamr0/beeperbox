@@ -1,6 +1,6 @@
 # PRD — MCP HTTP Transport Hardening
 
-> Status: MCP hardening + VNC auth (H3) implemented and CI-tested (`mcp-test`, `vnc-test`); pending release tagging.
+> Status: shipped in **v0.5.0** — all HIGH and actionable MEDIUM/LOW findings closed; CI-tested (`mcp-test`, `vnc-test`).
 > Scope: `mcp/server.js`, `entrypoint.sh`, `docker-compose.yml`, `scripts/vnc-auth-probe.py`, CI workflows. No changes to the MCP tool surface, schemas, ports, or default behavior.
 
 ## Problem
