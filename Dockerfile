@@ -42,15 +42,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # unsquashfs directly bypasses the launcher entirely and works identically
 # on any build platform.
 ARG TARGETARCH
+# Beeper Desktop download. DEFAULT (both args empty): the rolling "stable"
+# URL, so the image always picks up the latest Beeper — the weekly cron
+# rebuild relies on this and it must stay the default. For a reproducible /
+# verifiable build, set BEEPER_VERSION (and optionally BEEPER_SHA256) as
+# build args: that pins an exact versioned artifact and, when a hash is
+# given, fails the build on mismatch. Supply chain note: the rolling default
+# is authenticated by TLS only (no independent signature is published);
+# pinning + sha256 is the path for builds that need integrity guarantees.
+ARG BEEPER_VERSION=
+ARG BEEPER_SHA256=
 RUN set -e; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) BEEPER_ARCH=x64 ;; \
-      arm64) BEEPER_ARCH=arm64 ;; \
+      amd64) BEEPER_ARCH=x64; FILE_ARCH=x86_64 ;; \
+      arm64) BEEPER_ARCH=arm64; FILE_ARCH=arm64 ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2 && exit 1 ;; \
     esac; \
-    echo "downloading Beeper Desktop for ${BEEPER_ARCH}"; \
-    curl -L "https://api.beeper.com/desktop/download/linux/${BEEPER_ARCH}/stable/com.automattic.beeper.desktop" \
-        -o /opt/beeper.AppImage; \
+    if [ -n "${BEEPER_VERSION}" ]; then \
+      URL="https://beeper-desktop.download.beeper.com/builds/Beeper-${BEEPER_VERSION}-${FILE_ARCH}.AppImage"; \
+      echo "downloading pinned Beeper Desktop ${BEEPER_VERSION} (${FILE_ARCH})"; \
+    else \
+      URL="https://api.beeper.com/desktop/download/linux/${BEEPER_ARCH}/stable/com.automattic.beeper.desktop"; \
+      echo "downloading latest stable Beeper Desktop (${BEEPER_ARCH}) — auto-update"; \
+    fi; \
+    curl -fL "${URL}" -o /opt/beeper.AppImage; \
+    if [ -n "${BEEPER_SHA256}" ]; then \
+      echo "verifying sha256"; \
+      echo "${BEEPER_SHA256}  /opt/beeper.AppImage" | sha256sum -c -; \
+    fi; \
     # The squashfs magic "hsqs" also occurs naturally inside the ELF launcher
     # as code/data, so the first match is often a false positive. Iterate all
     # candidates and pick the first one where `unsquashfs -s` can actually

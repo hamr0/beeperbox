@@ -20,6 +20,8 @@ on:
   pull_request:
     paths:
       - 'mcp/**'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
       - 'docker-compose.yml'
       - '.github/workflows/mcp-test.yml'
 
