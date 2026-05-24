@@ -31,16 +31,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # amd64 only: the MCP server is arch-independent Node logic, so there's
       # no value in a QEMU arm64 build here. Load the image locally so we can
       # `docker run` it. GHA cache is shared with release.yml's builds.
       - name: Build image (amd64, load locally)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
