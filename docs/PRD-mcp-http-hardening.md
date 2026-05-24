@@ -59,8 +59,16 @@ The noVNC/x11vnc session on `:6080` granted full control of the Beeper Desktop G
 - **Acceptance (verified locally in `debian:12-slim` and in CI `vnc-test`):** with `VNC_PASSWORD` unset the server offers RFB security type **None (1)**; with it set it offers **VNC auth (2)** and **not** None. `bash -n entrypoint.sh` passes; a grep guard in `vnc-test.yml` fails if the `VNC_PASSWORD`/`-rfbauth`/`-nopw` wiring is removed (anti-drift).
 - Listener/port behavior unchanged; this only changes the RFB security type offered.
 
+## Addendum — supply chain (M2) & container hardening (L2, L3)
+
+- **M2 — AppImage integrity.** Beeper publishes no independent signature/checksum (the download endpoint exposes only a multipart S3 etag), and TLS already covers transport MITM. Resolved as **opt-in reproducible pinning**: `BEEPER_VERSION` + `BEEPER_SHA256` build args fetch an exact versioned artifact and fail the build on hash mismatch. The default stays the rolling auto-update URL (a hard requirement — the weekly cron depends on it). Verified: pinned URLs resolve for both arches, `sha256sum -c` aborts on mismatch, default path unchanged, full default build green in CI `mcp-test`.
+- **L2 — `--no-sandbox` + root.** Full non-root + Chromium-sandbox rebuild rejected as too fragile for a single-tenant container that trusts Beeper Desktop. Mitigated with `security_opt: [no-new-privileges:true]` in compose — verified the full stack still boots under the flag. `cap_drop` not added (risks breaking X/dbus/socat without a dedicated boot test).
+- **L3 — exposure comment.** `docker-compose.yml` exposure note now directs users to set `MCP_AUTH_TOKEN` and `VNC_PASSWORD` before dropping the loopback prefix.
+- **L1 — error body verbatim:** kept by design (`-32001` aids agent self-correction; consumer is the agent, token never echoed). Not a fix.
+
 ## Open items / follow-up
 
-- **M2 — AppImage integrity:** pin/verify a checksum or signature for the Beeper Desktop download, or document the trust assumption.
-- ~~**H3 — VNC `-nopw`**~~ — done (see Addendum above).
-- ~~**CI functional test**~~ — done: `mcp-test.yml` (MCP guard matrix in the built image) and `vnc-test.yml` (RFB security-type probe), both `workflow_dispatch` + path-scoped `pull_request`.
+- None blocking. All HIGH and actionable MEDIUM/LOW findings resolved; accepted-by-design residuals documented in CHANGELOG "Security review: closed".
+- ~~**M2 — AppImage integrity**~~ — done (opt-in pinning above).
+- ~~**H3 — VNC `-nopw`**~~ — done (see VNC addendum above).
+- ~~**CI functional test**~~ — done: `mcp-test.yml` (MCP guard matrix + image build) and `vnc-test.yml` (RFB security-type probe), both `workflow_dispatch` + path-scoped `pull_request`.

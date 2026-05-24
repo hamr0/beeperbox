@@ -18,7 +18,10 @@ services:
       # Bound to 127.0.0.1 so the API and noVNC UI are NOT reachable from
       # other hosts by default. For remote access use an SSH tunnel,
       # Tailscale/Wireguard, or a TLS-terminating reverse proxy in front.
-      # To expose publicly (NOT RECOMMENDED), drop the 127.0.0.1 prefix.
+      # To expose beyond loopback (NOT RECOMMENDED), drop the 127.0.0.1
+      # prefix — and only after setting MCP_AUTH_TOKEN and VNC_PASSWORD
+      # below. Those are the only auth on :23375 (MCP) and :6080 (noVNC)
+      # once the loopback binding is gone.
       #
       # Host ports are env-overridable so dev machines that already run a
       # native Beeper Desktop on :23373 can fall back without editing the
@@ -52,6 +55,14 @@ services:
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'
+    # Defense-in-depth: the container runs Beeper Desktop (Electron) as root
+    # with --no-sandbox, so block setuid privilege escalation. This is safe
+    # because nothing in the stack relies on setuid to escalate; it just
+    # shrinks the blast radius of a renderer compromise. (A full non-root +
+    # Chromium-sandbox rebuild was considered and rejected as too fragile for
+    # a single-tenant container that already trusts Beeper Desktop.)
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   beeperbox_config:
