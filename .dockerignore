@@ -3,6 +3,7 @@
 .github
 .claude
 .barebrowse
+.ci-tools
 docs
 scripts
 README.md
