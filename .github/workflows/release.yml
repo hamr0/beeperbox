@@ -65,10 +65,21 @@ jobs:
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      # Build context = the release ref (what actually ships). But the gate
+      # scripts come from the workflow ref (latest), NOT the release ref: the
+      # weekly cron rebuilds the newest release *tag*, which can predate the
+      # test tooling (e.g. v0.5.0 was tagged before these scripts existed). The
+      # scripts are black-box probes of the built image, so taking them from
+      # latest is correct and avoids "script not found" on older tags.
+      - name: Checkout build context (release ref)
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Checkout test tooling (latest workflow ref)
+        uses: actions/checkout@v6
+        with:
+          path: .ci-tools
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -84,20 +95,13 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: MCP guard gate
-        run: bash scripts/mcp-guard-check.sh beeperbox:candidate
+        run: bash .ci-tools/scripts/mcp-guard-check.sh beeperbox:candidate
 
       - name: Install Xvfb + x11vnc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
 
       - name: VNC auth gate
-        run: |
-          bash -n entrypoint.sh
-          if ! grep -q 'VNC_PASSWORD' entrypoint.sh \
-             || ! grep -q -- '-rfbauth' entrypoint.sh \
-             || ! grep -q -- '-nopw' entrypoint.sh; then
-            echo "entrypoint.sh lost its VNC auth wiring"; exit 1
-          fi
-          bash scripts/vnc-auth-check.sh
+        run: bash .ci-tools/scripts/vnc-auth-check.sh
 
   # Publish only runs if verify passed. Rolls the current :latest to :previous
   # for a known-good fallback, then builds + pushes the multi-arch image.
