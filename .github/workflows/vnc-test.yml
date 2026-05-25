@@ -1,20 +1,19 @@
 name: vnc-test
 
-# Verifies the noVNC/x11vnc auth posture configured by entrypoint.sh, without
+# Verifies the noVNC/x11vnc auth posture configured by entrypoint.sh without
 # booting the full container: VNC_PASSWORD unset -> RFB security type None (1);
-# VNC_PASSWORD set -> VNC authentication (2) and NOT None. This mirrors
-# entrypoint.sh's x11vnc invocation; the grep guard below fails if that wiring
-# is ever removed, so the functional probe and the source can't silently drift.
+# set -> VNC authentication (2), not None. Runs the shared
+# scripts/vnc-auth-check.sh (also used by release.yml's publish gate). The grep
+# guard fails if entrypoint.sh ever loses the VNC_PASSWORD/-rfbauth/-nopw wiring.
 #
-# Triggers:
-#   - workflow_dispatch  -> run on demand ("trigger as needed")
-#   - pull_request       -> auto-run when the relevant files change
+# Triggers: workflow_dispatch (on demand) + pull_request on the relevant files.
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - 'entrypoint.sh'
       - 'scripts/vnc-auth-probe.py'
+      - 'scripts/vnc-auth-check.sh'
       - '.github/workflows/vnc-test.yml'
 
 permissions:
@@ -38,23 +37,5 @@ jobs:
       - name: Install Xvfb + x11vnc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
 
-      - name: Probe RFB security types (both modes)
-        run: |
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1024x768x24 -ac >/dev/null 2>&1 &
-          sleep 2
-          # open mode (VNC_PASSWORD unset) -> -nopw
-          x11vnc -display :99 -forever -nopw -shared -rfbport 5900 >/dev/null 2>&1 &
-          sleep 2
-          nopw=$(python3 scripts/vnc-auth-probe.py 127.0.0.1 5900)
-          # password mode -> -rfbauth (same commands entrypoint.sh runs)
-          x11vnc -storepasswd hunter2 /tmp/.vncpass >/dev/null 2>&1
-          x11vnc -display :99 -forever -rfbauth /tmp/.vncpass -shared -rfbport 5901 >/dev/null 2>&1 &
-          sleep 2
-          pw=$(python3 scripts/vnc-auth-probe.py 127.0.0.1 5901)
-          echo "nopw security types=[$nopw]   pw security types=[$pw]"
-          fail=0
-          echo "$nopw" | grep -qw 1 && echo "PASS: open mode offers None(1)"     || { echo "FAIL: open mode should offer 1"; fail=1; }
-          echo "$pw"   | grep -qw 2 && echo "PASS: password offers VNCAuth(2)"   || { echo "FAIL: password should offer 2"; fail=1; }
-          if echo "$pw" | grep -qw 1; then echo "FAIL: password mode must NOT offer None(1)"; fail=1; else echo "PASS: password mode does not offer None"; fi
-          exit $fail
+      - name: VNC auth probe
+        run: bash scripts/vnc-auth-check.sh
