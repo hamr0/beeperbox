@@ -1,7 +1,7 @@
 # PRD — MCP HTTP Transport Hardening
 
-> Status: shipped in **v0.5.0** — all HIGH and actionable MEDIUM/LOW findings closed; CI-tested (`mcp-test`, `vnc-test`).
-> Scope: `mcp/server.js`, `entrypoint.sh`, `docker-compose.yml`, `scripts/vnc-auth-probe.py`, CI workflows. No changes to the MCP tool surface, schemas, ports, or default behavior.
+> Status: shipped in **v0.5.0** — all HIGH and actionable MEDIUM/LOW findings closed; CI-tested (`mcp-test`, `vnc-test`). Release pipeline hardened post-0.5.0 (CI-gated publish + `:previous` rollback, in `[Unreleased]`).
+> Scope: `mcp/server.js`, `entrypoint.sh`, `Dockerfile`, `docker-compose.yml`, `scripts/{vnc-auth-probe,mcp-guard-check,vnc-auth-check}.sh`, CI workflows. No changes to the MCP tool surface, schemas, ports, or default behavior.
 
 ## Problem
 
@@ -66,9 +66,20 @@ The noVNC/x11vnc session on `:6080` granted full control of the Beeper Desktop G
 - **L3 — exposure comment.** `docker-compose.yml` exposure note now directs users to set `MCP_AUTH_TOKEN` and `VNC_PASSWORD` before dropping the loopback prefix.
 - **L1 — error body verbatim:** kept by design (`-32001` aids agent self-correction; consumer is the agent, token never echoed). Not a fix.
 
+## Addendum — safe rolling releases (CI-gated publish + rollback)
+
+Came out of the auto-update discussion (see the supply-chain addendum). The weekly cron republished `:latest` **ungated**, and there was no retained tagged fallback (`0.4.0`↓ had aged out, and `:0.5.0` itself drifted across rebuilds), so a broken upstream Beeper could silently become the live image with no easy rollback.
+
+- **R-REL1 — gate.** The release path (tag push / weekly cron / dispatch) is now `prepare → verify → publish`. `verify` builds the image and runs the shared guard scripts against it; `publish` runs **only if `verify` passed**. A failed gate skips the publish (previous `:latest` stays live as last-known-good) and `notify-failure` flags it.
+- **R-REL2 — rollback.** Each publish first rolls the current `:latest` to `:previous` (server-side manifest copy, no rebuild). Recover with `BEEPERBOX_IMAGE_TAG=previous`; a **digest** pin is the bit-exact anchor.
+- **R-REL3 — no drift.** `scripts/mcp-guard-check.sh` + `scripts/vnc-auth-check.sh` are the single source of truth for both the PR workflows and the release gate. The gate sources them from the **latest workflow ref** (not the release ref), so the weekly rebuild of an older tag that predates the scripts still runs the current black-box checks.
+- **Acceptance (verified end-to-end via `workflow_dispatch`):** a dispatch whose build ref lacked the scripts correctly **failed the gate and skipped publish** (`notify-failure` fired, `:latest` untouched); after R-REL3, a dispatch **passed the gate, published, and created `:previous`** — both `:latest` and `:previous` confirmed multi-arch on GHCR.
+- **Limitation:** the gate runs the MCP server standalone (no live Beeper), so it can't catch Beeper API-shape drift breaking the normalizers — `:previous` is the safety net. `:edge` (master pushes) is ungated by design.
+
 ## Open items / follow-up
 
 - None blocking. All HIGH and actionable MEDIUM/LOW findings resolved; accepted-by-design residuals documented in CHANGELOG "Security review: closed".
+- ~~**Gate the weekly `:latest` rebuild + keep a known-good fallback**~~ — done (safe-rolling-releases addendum above).
 - ~~**M2 — AppImage integrity**~~ — done (opt-in pinning above).
 - ~~**H3 — VNC `-nopw`**~~ — done (see VNC addendum above).
 - ~~**CI functional test**~~ — done: `mcp-test.yml` (MCP guard matrix + image build) and `vnc-test.yml` (RFB security-type probe), both `workflow_dispatch` + path-scoped `pull_request`.
