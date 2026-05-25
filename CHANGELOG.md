@@ -14,6 +14,13 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Planned
+- Whatever the first real user issue asks for.
+
+## [0.5.1] — 2026-05-25 `[PATCH]`
+
+Release-pipeline hardening and documentation. PATCH per the versioning policy — these change how releases are *built and described*, not what the running container does: the MCP tool surface, raw/HTTP API, `Chat`/`Message` schemas, and default ports are bit-identical to v0.5.0, and no client-code edits are required. The headline is that the release path is now **gated on the guard tests** with a `:previous` rollback tag, so a broken upstream Beeper can no longer silently become `:latest`.
+
 ### CI / release
 - **Releases are now gated on the guard tests.** The publish path (tag push, weekly cron, manual dispatch) builds the image, runs the MCP guard matrix (`scripts/mcp-guard-check.sh`) and the VNC auth probe (`scripts/vnc-auth-check.sh`) against it, and **only pushes `:latest`/semver tags if they pass**. Closes the gap where the weekly rebuild could publish an untested `:latest` — e.g. if an auto-pulled newer Beeper broke startup. On failure the publish is skipped (previous `:latest` stays live as last-known-good) and the run is flagged in its summary.
 - **Rolling known-good fallback.** Each successful publish first rolls the current `:latest` to `:previous` (a server-side manifest copy, no rebuild). If a future `:latest` ever misbehaves, `BEEPERBOX_IMAGE_TAG=previous docker compose up -d` drops back to the prior image without needing to know the version number. For a bit-exact pin, use the image **digest** (`@sha256:…`) — semver tags are rebuilt by the weekly cron and are not immutable while they're the newest release.
@@ -24,9 +31,6 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - **Added `docs/PRD.md` — the comprehensive product grounding doc.** Promoted from the prior hardening-only PRD into a full product spec covering purpose, what beeperbox is and explicitly is *not* (non-goals: single-network bots, laptop humans, multi-tenancy, typed SDKs, npm, streaming, in-place auto-update), target users, architecture, the raw-API + 10-tool MCP surface, the security model, the distribution/release model, versioning, release history, roadmap, and known limitations — all grounded in the CHANGELOG and commit history. This is now the reference for what changes are in-scope.
 - **Removed `docs/PRD-mcp-http-hardening.md`** — folded into `docs/PRD.md` (§7 security model, §8 release model). The hardening detail is preserved; it's no longer a separate feature spec.
 - Clarified in `docs/PRD.md` §6.2 that the `docker exec -i beeperbox …` stdio example uses the *default* container name (`BEEPERBOX_CONTAINER_NAME`-overridable for multi-instance hosts).
-
-### Planned
-- Whatever the first real user issue asks for.
 
 ## [0.5.0] — 2026-05-24 `[MINOR]`
 
