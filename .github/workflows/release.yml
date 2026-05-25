@@ -1,20 +1,22 @@
 name: release
 
-# Builds the beeperbox image and publishes it to GHCR.
+# Builds the beeperbox image and publishes it to GHCR — gated on the same
+# functional tests the PRs run, so a broken build (or a broken upstream Beeper
+# pulled by the weekly rebuild) can't silently become :latest.
+#
+# Flow for the release path (tag push / weekly cron / manual dispatch):
+#   prepare  -> resolve which ref to build
+#   verify   -> build amd64, run the MCP + VNC guard checks (the gate)
+#   publish  -> roll current :latest to :previous, then build+push multi-arch
+#               semver tags + :latest  (only runs if verify passed)
+# If verify fails, publish is skipped: the previous :latest stays live as the
+# last-known-good image, :previous is untouched, and notify-failure flags it.
 #
 # Triggers:
-#   - tag push (v*.*.*)        -> :X.Y.Z, :X.Y, :X, :latest
-#   - push to master           -> :edge (bleeding-edge, may break)
-#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag and re-push
-#                                 :X.Y.Z / :X.Y / :X / :latest so the
-#                                 bundled Beeper AppImage stays current
-#                                 without needing a new code release.
-#   - manual dispatch          -> ad-hoc rebuild of newest release tag
-#
-# Source lives in the repo; published artifacts live in GHCR. Users run
-# `docker compose up` against docker-compose.yml (which references the
-# published image) without cloning. Developers use docker-compose.dev.yml
-# to build from a local checkout.
+#   - tag push (v*.*.*)        -> :X.Y.Z, :X.Y, :X, :latest (gated)
+#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag, refresh Beeper (gated)
+#   - manual dispatch          -> ad-hoc gated rebuild of newest release tag
+#   - push to master           -> :edge (bleeding-edge, ungated by design)
 
 on:
   push:
@@ -31,12 +33,14 @@ permissions:
   packages: write
 
 jobs:
-  # Tagged releases and scheduled rebuilds publish the semver tags + :latest.
-  # On schedule/dispatch we resolve the newest release tag and build from
-  # that ref, so :latest keeps pointing at released code (not master HEAD).
-  release:
+  # Resolve the ref to build. Tag push builds the pushed tag; schedule/dispatch
+  # resolve the newest release tag so :latest tracks released code, not master.
+  prepare:
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      skip: ${{ steps.ref.outputs.skip }}
     steps:
       - name: Resolve ref
         id: ref
@@ -54,44 +58,96 @@ jobs:
             echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # The gate: build the candidate image and run the same checks the PRs run.
+  # Nothing here pushes to GHCR.
+  verify:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout
-        if: steps.ref.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.ref.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build candidate (amd64, load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: beeperbox:candidate
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: MCP guard gate
+        run: bash scripts/mcp-guard-check.sh beeperbox:candidate
+
+      - name: Install Xvfb + x11vnc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
+
+      - name: VNC auth gate
+        run: |
+          bash -n entrypoint.sh
+          if ! grep -q 'VNC_PASSWORD' entrypoint.sh \
+             || ! grep -q -- '-rfbauth' entrypoint.sh \
+             || ! grep -q -- '-nopw' entrypoint.sh; then
+            echo "entrypoint.sh lost its VNC auth wiring"; exit 1
+          fi
+          bash scripts/vnc-auth-check.sh
+
+  # Publish only runs if verify passed. Rolls the current :latest to :previous
+  # for a known-good fallback, then builds + pushes the multi-arch image.
+  publish:
+    needs: [prepare, verify]
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Set up QEMU
-        if: steps.ref.outputs.skip != 'true'
         uses: docker/setup-qemu-action@v4
         with:
           platforms: linux/amd64,linux/arm64
 
       - name: Set up Docker Buildx
-        if: steps.ref.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        if: steps.ref.outputs.skip != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Roll current :latest -> :previous (known-good fallback)
+        run: |
+          IMG=ghcr.io/${{ github.repository_owner }}/beeperbox
+          if docker buildx imagetools inspect "$IMG:latest" >/dev/null 2>&1; then
+            docker buildx imagetools create -t "$IMG:previous" "$IMG:latest"
+            echo "rolled $IMG:latest -> $IMG:previous"
+          else
+            echo "no existing :latest yet — skipping :previous roll (first publish)"
+          fi
+
       - name: Compute image tags
-        if: steps.ref.outputs.skip != 'true'
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/beeperbox
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.ref.outputs.ref }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.ref }}
-            type=semver,pattern={{major}},value=${{ steps.ref.outputs.ref }}
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.ref }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.ref }}
+            type=semver,pattern={{major}},value=${{ needs.prepare.outputs.ref }}
             type=raw,value=latest
 
       - name: Build and push
-        if: steps.ref.outputs.skip != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -102,8 +158,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Every push to master publishes :edge. Bleeding-edge, may break between
-  # releases. Users opt in explicitly.
+  # Flags a failed gate/publish loudly. :latest is unchanged on failure, so
+  # this is "we did NOT ship", not "we shipped something broken".
+  notify-failure:
+    needs: [prepare, verify, publish]
+    if: failure() && needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        run: |
+          {
+            echo "## ⚠️ Release gate failed — \`:latest\` was NOT updated"
+            echo ""
+            echo "Ref: \`${{ needs.prepare.outputs.ref }}\`"
+            echo ""
+            echo "The verify (guard tests) or publish step failed. The previous \`:latest\` remains the live image and \`:previous\` is unchanged — nothing broken was shipped. Investigate the failing job before re-running."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Every push to master publishes :edge — bleeding-edge, may break between
+  # releases, ungated by design. Users opt in explicitly.
   edge:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -126,11 +199,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Compute OCI labels (including org.opencontainers.image.revision)
-      # so `docker inspect ghcr.io/.../beeperbox:edge` shows which master
-      # commit the image was built from. Without metadata-action the labels
-      # are empty — :latest has them because its job runs metadata-action,
-      # :edge needs the same.
       - name: Compute OCI labels
         id: meta
         uses: docker/metadata-action@v6

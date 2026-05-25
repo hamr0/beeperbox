@@ -14,6 +14,12 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### CI / release
+- **Releases are now gated on the guard tests.** The publish path (tag push, weekly cron, manual dispatch) builds the image, runs the MCP guard matrix (`scripts/mcp-guard-check.sh`) and the VNC auth probe (`scripts/vnc-auth-check.sh`) against it, and **only pushes `:latest`/semver tags if they pass**. Closes the gap where the weekly rebuild could publish an untested `:latest` — e.g. if an auto-pulled newer Beeper broke startup. On failure the publish is skipped (previous `:latest` stays live as last-known-good) and the run is flagged in its summary.
+- **Rolling known-good fallback.** Each successful publish first rolls the current `:latest` to `:previous` (a server-side manifest copy, no rebuild). If a future `:latest` ever misbehaves, `BEEPERBOX_IMAGE_TAG=previous docker compose up -d` drops back to the prior image without needing to know the version number. For a bit-exact pin, use the image **digest** (`@sha256:…`) — semver tags are rebuilt by the weekly cron and are not immutable while they're the newest release.
+- **Shared test scripts** (`scripts/mcp-guard-check.sh`, `scripts/vnc-auth-check.sh`) are now the single source of truth for both the PR workflows (`mcp-test`, `vnc-test`) and the release gate, so "what the PR tests" and "what blocks a release" can't drift.
+- **Known limitation (unchanged):** the gate runs the MCP server standalone (no live Beeper account), so it catches build/startup/guard regressions but **not** Beeper API-shape drift breaking the normalizers. `:previous` is the safety net for that case. `:edge` (master pushes) stays ungated by design.
+
 ### Planned
 - Whatever the first real user issue asks for.
 
