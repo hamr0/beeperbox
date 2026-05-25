@@ -20,6 +20,10 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - **Shared test scripts** (`scripts/mcp-guard-check.sh`, `scripts/vnc-auth-check.sh`) are now the single source of truth for both the PR workflows (`mcp-test`, `vnc-test`) and the release gate, so "what the PR tests" and "what blocks a release" can't drift. The release gate sources these scripts from the latest workflow ref (not the release tag being rebuilt), so the weekly rebuild of an older tag that predates them still runs the current black-box checks against the freshly built image.
 - **Known limitation (unchanged):** the gate runs the MCP server standalone (no live Beeper account), so it catches build/startup/guard regressions but **not** Beeper API-shape drift breaking the normalizers. `:previous` is the safety net for that case. `:edge` (master pushes) stays ungated by design.
 
+### Docs
+- **Added `docs/PRD.md` — the comprehensive product grounding doc.** Promoted from the prior hardening-only PRD into a full product spec covering purpose, what beeperbox is and explicitly is *not* (non-goals: single-network bots, laptop humans, multi-tenancy, typed SDKs, npm, streaming, in-place auto-update), target users, architecture, the raw-API + 10-tool MCP surface, the security model, the distribution/release model, versioning, release history, roadmap, and known limitations — all grounded in the CHANGELOG and commit history. This is now the reference for what changes are in-scope.
+- **Removed `docs/PRD-mcp-http-hardening.md`** — folded into `docs/PRD.md` (§7 security model, §8 release model). The hardening detail is preserved; it's no longer a separate feature spec.
+
 ### Planned
 - Whatever the first real user issue asks for.
 
