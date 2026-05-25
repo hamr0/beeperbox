@@ -119,7 +119,7 @@ The full upstream `/v1/*` API, reachable on `:23373` with `Authorization: Bearer
 A single-file, zero-dependency Node server wrapping the raw API. Two interchangeable transports in one process, selected at startup:
 
 - **HTTP** (default, always on): JSON-RPC 2.0 over POST on `:23375`. For remote agents, cross-container setups, cloud runtimes.
-- **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout (stdout reserved for protocol, logs to stderr), via `docker exec -i beeperbox node /opt/mcp/server.js --stdio`. For local MCP clients (Claude Code, Cursor, Cline, Continue, bareagent).
+- **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout (stdout reserved for protocol, logs to stderr), via `docker exec -i beeperbox node /opt/mcp/server.js --stdio` (here `beeperbox` is the default container name — use your `BEEPERBOX_CONTAINER_NAME` if you overrode it for a multi-instance host). For local MCP clients (Claude Code, Cursor, Cline, Continue, bareagent).
 
 **The 10 tools:**
 

@@ -23,6 +23,7 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 ### Docs
 - **Added `docs/PRD.md` — the comprehensive product grounding doc.** Promoted from the prior hardening-only PRD into a full product spec covering purpose, what beeperbox is and explicitly is *not* (non-goals: single-network bots, laptop humans, multi-tenancy, typed SDKs, npm, streaming, in-place auto-update), target users, architecture, the raw-API + 10-tool MCP surface, the security model, the distribution/release model, versioning, release history, roadmap, and known limitations — all grounded in the CHANGELOG and commit history. This is now the reference for what changes are in-scope.
 - **Removed `docs/PRD-mcp-http-hardening.md`** — folded into `docs/PRD.md` (§7 security model, §8 release model). The hardening detail is preserved; it's no longer a separate feature spec.
+- Clarified in `docs/PRD.md` §6.2 that the `docker exec -i beeperbox …` stdio example uses the *default* container name (`BEEPERBOX_CONTAINER_NAME`-overridable for multi-instance hosts).
 
 ### Planned
 - Whatever the first real user issue asks for.
