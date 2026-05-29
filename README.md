@@ -8,6 +8,8 @@
 ```
 
 <p align="center">
+  <a href="https://github.com/hamr0/beeperbox/actions/workflows/mcp-test.yml"><img src="https://img.shields.io/github/actions/workflow/status/hamr0/beeperbox/mcp-test.yml?label=mcp-test" alt="mcp-test"></a>
+  <a href="https://github.com/hamr0/beeperbox/actions/workflows/vnc-test.yml"><img src="https://img.shields.io/github/actions/workflow/status/hamr0/beeperbox/vnc-test.yml?label=vnc-test" alt="vnc-test"></a>
   <img src="https://img.shields.io/github/v/tag/hamr0/beeperbox?sort=semver&label=version&color=2a4f8c" alt="version (auto from latest git tag)">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
 </p>
