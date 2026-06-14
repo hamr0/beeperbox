@@ -17,6 +17,9 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 ### Planned
 - Whatever the first real user issue asks for.
 
+### Documentation
+- **README — added a shared "The bare ecosystem" section** (Core / Optional-reach list covering all six modules: `bareagent` · `bareguard` · `litectx`, plus `barebrowse` · `baremobile` · `beeperbox`). beeperbox sits under optional reach as the messaging member. The same section now ships across all six repos. Docs only — no container/runtime change.
+
 ## [0.5.1] — 2026-05-25 `[PATCH]`
 
 Release-pipeline hardening and documentation. PATCH per the versioning policy — these change how releases are *built and described*, not what the running container does: the MCP tool surface, raw/HTTP API, `Chat`/`Message` schemas, and default ports are bit-identical to v0.5.0, and no client-code edits are required. The headline is that the release path is now **gated on the guard tests** with a `:previous` rollback tag, so a broken upstream Beeper can no longer silently become `:latest`.
