@@ -12,7 +12,9 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
+## [0.6.0] — 2026-06-15 `[MINOR]`
+
+First release driven end-to-end by a real consumer ([multis](https://github.com/hamr0/multis), beeperbox's first customer): a watch primitive and a reliable echo-guard so an agent can react to incoming messages without reinventing the seed/poll/dedup loop or echo-looping on its own sends, plus two container-lifecycle robustness fixes. MINOR per the versioning policy — new MCP tool + additive schema fields + new runtime behavior, all backward compatible. **Live-validation note:** the `source` echo-guard and the `pendingMessageID` → final-bridge-id resolution were validated against a real Beeper account by multis (CI has none); the standard release gate (guard + VNC probes) still runs the server standalone.
 
 ### Added — `poll_messages` watch primitive + echo-guard `[MINOR]`
 

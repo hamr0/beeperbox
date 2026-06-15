@@ -919,7 +919,7 @@ async function handleRequest(req) {
       case 'initialize':
         result = {
           protocolVersion: '2025-03-26',
-          serverInfo: { name: 'beeperbox', version: '0.5.0' },
+          serverInfo: { name: 'beeperbox', version: '0.6.0' },
           capabilities: { tools: {} },
         };
         break;

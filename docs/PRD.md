@@ -3,7 +3,7 @@
 > **This is the grounding document for beeperbox: what it is, what it is *not*, and why.**
 > When a feature, a release, or a "wouldn't it be cool if…" idea is on the table, it gets measured against this doc. Anything that contradicts the "Non-goals" section is rejected by default unless this document is changed first.
 
-- **Status:** shipped and in use. Current release **v0.5.0** (2026-05-24); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
+- **Status:** shipped and in use. Current release **v0.6.0** (2026-06-15); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
 - **Distribution:** pre-built multi-arch image on GHCR — `ghcr.io/hamr0/beeperbox` (`linux/amd64` + `linux/arm64`).
 - **License:** [Apache-2.0](../LICENSE). Independent wrapper around Beeper Desktop; **no affiliation** with Beeper / Automattic.
 - **Related deep-dive docs:** [`GUIDE.md`](GUIDE.md) (human operator walkthrough), [`../beeperbox.context.md`](../beeperbox.context.md) (AI-assistant integration guide).
@@ -97,7 +97,7 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | Var | Default | Effect |
 |---|---|---|
 | `BEEPER_TOKEN` | unset | Bearer token minted in Beeper Desktop; authenticates raw-API and MCP calls upstream. |
-| `BEEPERBOX_IMAGE_TAG` | `latest` | Which GHCR tag to run (`0.5.0`, `0.5`, `0`, `latest`, `previous`, `edge`, or a `@sha256:` digest). |
+| `BEEPERBOX_IMAGE_TAG` | `latest` | Which GHCR tag to run (`0.6.0`, `0.6`, `0`, `latest`, `previous`, `edge`, or a `@sha256:` digest). |
 | `BEEPERBOX_HOST_PORT` / `_NOVNC_PORT` / `_MCP_PORT` | `23373` / `6080` / `23375` | Host-side port remapping for multi-instance hosts. |
 | `BEEPERBOX_CONTAINER_NAME` | `beeperbox` | Container name, for running multiple instances. |
 | `MCP_AUTH_TOKEN` | unset | When set, every MCP HTTP request must carry `Authorization: Bearer <token>` or get `401`. |
@@ -239,7 +239,8 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.3.3 | 2026-05-13 | Fix black-VNC-on-boot (GPU) and IPv6-socat first-install bugs. |
 | 0.4.0 | 2026-05-18 | Deterministic `note_to_self` routing (off third-party saved-messages); clean SIGTERM shutdown; MCP smoke probe. |
 | 0.5.0 | 2026-05-24 | Security hardening: MCP auth + Host/Origin + body cap, VNC password, `no-new-privileges`, opt-in pinned builds. |
-| *(unreleased)* | — | CI-gated releases + `:previous` rollback; shared guard scripts as single source of truth. |
+| 0.5.1 | 2026-05-25 | CI-gated releases + `:previous` rollback; shared guard scripts as single source of truth. |
+| 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
 
 ---
 
