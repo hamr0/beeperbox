@@ -130,6 +130,9 @@ if [ "$SUPERVISE" != "1" ]; then
 fi
 
 echo "[ok] supervising beepertexts (interval ${SUPERVISE_INTERVAL}s, api-down grace ${SUPERVISE_API_GRACE})"
+# NOTE: `set -e` is active. Every failure-prone command in this loop is guarded
+# (`curl`/`kill -0` inside `if`, `kill`/`sleep` with `|| true`) so a non-zero
+# exit can't terminate supervision. Keep that discipline on any new command.
 API_WAS_UP=0
 API_DOWN_STREAK=0
 while true; do
@@ -141,6 +144,9 @@ while true; do
 
   # Process gone entirely → relaunch on the existing display (Xvfb still up).
   if ! kill -0 "$BEEPER_PID" 2>/dev/null; then
+    # If a SIGTERM landed in this window, don't spawn a fresh Beeper just to
+    # immediately stop it — the process is already gone, so exit cleanly.
+    [ "$SHUTTING_DOWN" = "1" ] && break
     echo "[!!] beepertexts exited — relaunching"
     launch_beeper
     API_DOWN_STREAK=0

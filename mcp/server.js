@@ -54,6 +54,9 @@ function envIntNonNeg(name, def) {
 }
 const RESOLVE_RETRIES = envIntNonNeg('BEEPERBOX_RESOLVE_RETRIES', 4);
 const RESOLVE_DELAY_MS = envIntNonNeg('BEEPERBOX_RESOLVE_DELAY_MS', 250);
+// Per-attempt fetch timeout so a hung Beeper API can't stall a send unbounded:
+// worst-case added send latency is RETRIES × (TIMEOUT + DELAY), not infinite.
+const RESOLVE_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_RESOLVE_TIMEOUT_MS', 3000);
 
 // Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
 // "[::1]:23375" -> "[::1]").
@@ -101,12 +104,24 @@ async function beeperFetch(path, opts = {}) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(opts.body);
   }
-  const r = await fetch(`${BEEPER_API}${path}`, init);
-  if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
-  const text = await r.text();
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return text; }
+  // Opt-in per-call timeout (opts.timeoutMs). Default callers are unbounded as
+  // before; the resolve path passes one so a hung API can't stall a send.
+  let timer = null;
+  if (opts.timeoutMs) {
+    const ac = new AbortController();
+    init.signal = ac.signal;
+    timer = setTimeout(() => ac.abort(), opts.timeoutMs);
+  }
+  try {
+    const r = await fetch(`${BEEPER_API}${path}`, init);
+    if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
+    const text = await r.text();
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ─── network normalization ────────────────────────────────────────
@@ -445,17 +460,19 @@ function addResolvedId(entry, finalID) {
 // fallback). Never throws — a degraded echo-guard must never fail a send.
 async function resolveSentId(chatID, pendingMessageID) {
   const pend = pendingMessageID ? String(pendingMessageID) : '';
-  if (!pend || RESOLVE_RETRIES <= 0) return null;
+  if (!pend || !chatID || RESOLVE_RETRIES <= 0) return null;
   for (let attempt = 0; attempt < RESOLVE_RETRIES; attempt++) {
     try {
       const m = await beeperFetch(
         `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(pend)}`,
+        { timeoutMs: RESOLVE_TIMEOUT_MS },
       );
-      // Single message object normally; tolerate a list-shaped response too.
-      const obj = m && (m.id != null ? m : (Array.isArray(m?.items) ? m.items[0] : null));
-      const id = obj && obj.id != null ? String(obj.id) : null;
+      // GET is by id → a single message object. Only trust that shape: a
+      // list/other response would let us read an arbitrary message's id and
+      // store the WRONG final id, which would mis-tag an unrelated read-back.
+      const id = m && m.id != null ? String(m.id) : null;
       if (id && id !== pend) return id; // swapped to the real bridge id
-    } catch { /* not acked yet, or transient — retry */ }
+    } catch { /* not acked yet, timed out, or transient — retry */ }
     if (attempt < RESOLVE_RETRIES - 1 && RESOLVE_DELAY_MS > 0) {
       await new Promise((r) => setTimeout(r, RESOLVE_DELAY_MS));
     }

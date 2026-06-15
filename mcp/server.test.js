@@ -223,6 +223,16 @@ test('matchSentMessage: two identical-text sends are each matched by their OWN r
   assert.deepEqual(S.matchSentMessage({ id: 'bB', chat_id: 'c1', text: 'ok', is_self: true }, entries, NOW), { source: 'api', client_tag: 'b' });
 });
 
+test('matchSentMessage: a legacy {sent_id} entry (pre-upgrade ledger) still id-matches AND text-falls-back', () => {
+  // Back-compat: ledgers written before this change have `sent_id` (no
+  // `sent_ids[]`, no `resolved`). Both echo paths must still work for them.
+  const entries = [{ chat_id: 'c1', sent_id: 'legacyP', text_hash: S.textHash('hi there'), client_tag: 'old', ts: NOW }];
+  // exact id via the legacy single field
+  assert.deepEqual(S.matchSentMessage({ id: 'legacyP', chat_id: 'c1', text: 'hi there', is_self: true }, entries, NOW), { source: 'api', client_tag: 'old' });
+  // id swapped & never resolved (resolved is undefined → not true) → text fallback still fires
+  assert.equal(S.matchSentMessage({ id: 'swapped', chat_id: 'c1', text: 'hi there', is_self: true }, entries, NOW).source, 'api');
+});
+
 test('matchSentMessage: an UNRESOLVED entry keeps the text fallback as a safety net', () => {
   // Resolution failed (slow ack) so we only have the pending id and the read-
   // back uses a swapped id we never learned. The text fallback (resolved:false)
