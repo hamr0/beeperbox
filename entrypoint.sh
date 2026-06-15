@@ -5,6 +5,13 @@ echo "=== beeperbox ==="
 
 eval $(dbus-launch --sh-syntax)
 
+# `docker restart` re-runs this entrypoint but preserves the container's
+# writable layer, so Xvfb's lock from the previous boot survives in /tmp.
+# A stale /tmp/.X99-lock makes Xvfb see ":99 already active", half-init the
+# display, and segfault — wedging the whole stack. Recreate clears /tmp, which
+# is why only `docker rm` recovered. Remove the stale lock so restart works.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 Xvfb :99 -screen 0 1024x768x24 -ac &
 sleep 1
 echo "[ok] xvfb"
