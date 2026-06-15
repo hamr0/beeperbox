@@ -44,8 +44,16 @@ const MCP_MAX_BODY = parseInt(process.env.MCP_MAX_BODY || String(1024 * 1024), 1
 // ack is asynchronous, so this is bounded + best-effort (retry a few times,
 // then give up and keep the text fallback as the safety net). Tunable so a
 // latency-sensitive deployment can shrink or disable it (RETRIES=0).
-const RESOLVE_RETRIES = parseInt(process.env.BEEPERBOX_RESOLVE_RETRIES || '4', 10);
-const RESOLVE_DELAY_MS = parseInt(process.env.BEEPERBOX_RESOLVE_DELAY_MS || '250', 10);
+// Clamp to a non-negative integer, falling back to the default on a malformed
+// value. Without this a typo (e.g. RETRIES="four" → NaN) would silently pass
+// the `<= 0` / loop guards and DISABLE resolution — degrading the echo-guard to
+// text-only with no error. `0` stays a valid, intentional disable.
+function envIntNonNeg(name, def) {
+  const n = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+const RESOLVE_RETRIES = envIntNonNeg('BEEPERBOX_RESOLVE_RETRIES', 4);
+const RESOLVE_DELAY_MS = envIntNonNeg('BEEPERBOX_RESOLVE_DELAY_MS', 250);
 
 // Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
 // "[::1]:23375" -> "[::1]").

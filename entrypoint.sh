@@ -107,6 +107,13 @@ trap 'SHUTTING_DOWN=1; kill -TERM "$BEEPER_PID" 2>/dev/null' TERM INT
 SUPERVISE=${BEEPERBOX_SUPERVISE:-1}
 SUPERVISE_INTERVAL=${BEEPERBOX_SUPERVISE_INTERVAL:-10}    # seconds between checks
 SUPERVISE_API_GRACE=${BEEPERBOX_SUPERVISE_API_GRACE:-6}   # consecutive API-down checks (after up) before recycle (~60s)
+# Sanitize to positive integers. A non-numeric value makes `sleep`/`-ge` fail
+# instantly and would spin the loop at 100% CPU (and hammer the API probe); 0
+# is a no-wait spin too. Fall back to the documented default on anything else.
+case $SUPERVISE_INTERVAL in ''|*[!0-9]*) SUPERVISE_INTERVAL=10 ;; esac
+case $SUPERVISE_API_GRACE in ''|*[!0-9]*) SUPERVISE_API_GRACE=6 ;; esac
+[ "$SUPERVISE_INTERVAL" -ge 1 ] 2>/dev/null || SUPERVISE_INTERVAL=10
+[ "$SUPERVISE_API_GRACE" -ge 1 ] 2>/dev/null || SUPERVISE_API_GRACE=6
 
 # Block until Beeper has fully exited, re-waiting because a trap interrupts
 # `wait` before the child finishes flushing.
