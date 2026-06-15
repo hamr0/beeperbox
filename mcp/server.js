@@ -35,6 +35,29 @@ const MCP_ALLOWED_HOSTS = new Set(
 );
 const MCP_MAX_BODY = parseInt(process.env.MCP_MAX_BODY || String(1024 * 1024), 10);
 
+// Echo-guard id resolution. A send returns a `pendingMessageID`, but Beeper
+// swaps it for the real bridge id once the message is acked — so the id we'd
+// record at send time never matches the id the same message reappears under in
+// poll_messages / read_chat. We resolve it: GET the message back until its id
+// differs from the pending one, then store the FINAL id so the echo-guard
+// matches on exact id instead of falling back to fragile text matching. The
+// ack is asynchronous, so this is bounded + best-effort (retry a few times,
+// then give up and keep the text fallback as the safety net). Tunable so a
+// latency-sensitive deployment can shrink or disable it (RETRIES=0).
+// Clamp to a non-negative integer, falling back to the default on a malformed
+// value. Without this a typo (e.g. RETRIES="four" → NaN) would silently pass
+// the `<= 0` / loop guards and DISABLE resolution — degrading the echo-guard to
+// text-only with no error. `0` stays a valid, intentional disable.
+function envIntNonNeg(name, def) {
+  const n = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+const RESOLVE_RETRIES = envIntNonNeg('BEEPERBOX_RESOLVE_RETRIES', 4);
+const RESOLVE_DELAY_MS = envIntNonNeg('BEEPERBOX_RESOLVE_DELAY_MS', 250);
+// Per-attempt fetch timeout so a hung Beeper API can't stall a send unbounded:
+// worst-case added send latency is RETRIES × (TIMEOUT + DELAY), not infinite.
+const RESOLVE_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_RESOLVE_TIMEOUT_MS', 3000);
+
 // Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
 // "[::1]:23375" -> "[::1]").
 function hostFromHeader(value) {
@@ -81,12 +104,24 @@ async function beeperFetch(path, opts = {}) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(opts.body);
   }
-  const r = await fetch(`${BEEPER_API}${path}`, init);
-  if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
-  const text = await r.text();
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return text; }
+  // Opt-in per-call timeout (opts.timeoutMs). Default callers are unbounded as
+  // before; the resolve path passes one so a hung API can't stall a send.
+  let timer = null;
+  if (opts.timeoutMs) {
+    const ac = new AbortController();
+    init.signal = ac.signal;
+    timer = setTimeout(() => ac.abort(), opts.timeoutMs);
+  }
+  try {
+    const r = await fetch(`${BEEPER_API}${path}`, init);
+    if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
+    const text = await r.text();
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ─── network normalization ────────────────────────────────────────
@@ -330,13 +365,19 @@ function selectDelivery(fresh, cur, page) {
 // persisted to the config volume so the guard survives a restart — the
 // brittle text-prefix guard this replaces was restart-durable too.
 //
-// CAVEAT (unverifiable in CI — no live Beeper account; validate against a
-// real account before relying on it): the match key is the pendingMessageID
-// returned by the send, but Beeper may swap that for a real bridge id once
-// the message is acked. So a content fallback also matches, but ONLY for
-// our own (is_self) messages, in the same chat, inside a short window —
-// tight enough that a human re-typing identical text is not mis-tagged as
-// ours and silently dropped.
+// PRIMARY match is exact id. The send only knows the pendingMessageID, which
+// Beeper swaps for a real bridge id on ack — so we resolve the final id right
+// after sending (resolveSentId) and record BOTH against the entry. A read-back
+// then matches by exact id whether or not the swap happened. The content
+// fallback survives only as a last-ditch safety net, and ONLY for entries we
+// could NOT resolve a final id for: it matches our own (is_self) messages, in
+// the same chat, inside a short window. Once an entry IS resolved, exact id is
+// authoritative for it and the text fallback is deliberately disabled — that is
+// what stops a human re-typing identical text from being mis-tagged as ours.
+//
+// CAVEAT (unverifiable in CI — no live Beeper account; validate against a real
+// account before relying on it): the resolution and content fallback both
+// depend on Beeper's live id/ack behavior.
 
 const LEDGER_MAX = 500;
 const LEDGER_TEXT_WINDOW_MS = 15 * 60 * 1000;
@@ -348,7 +389,7 @@ function ledgerPath() {
   return process.env.BEEPERBOX_SENT_LEDGER || '/root/.config/beeperbox-sent-ledger.json';
 }
 
-let ledger = null; // lazily loaded array of { chat_id, sent_id, text_hash, client_tag, ts }
+let ledger = null; // lazily loaded array of { chat_id, sent_ids[], resolved, text_hash, client_tag, ts }
 
 function textHash(text) {
   return crypto.createHash('sha256')
@@ -384,31 +425,87 @@ function persistLedger() {
 
 function recordSent({ chat_id, sent_id, text, client_tag }) {
   loadLedger();
-  ledger.push({
+  const entry = {
     chat_id,
-    sent_id: sent_id ? String(sent_id) : null,
+    // Carries every id this send is known by — the pendingMessageID now, the
+    // resolved bridge id once addResolvedId() lands it. `resolved` flips true
+    // when we have the authoritative final id (retires the text fallback).
+    sent_ids: sent_id ? [String(sent_id)] : [],
+    resolved: false,
     text_hash: textHash(text),
     client_tag: client_tag ? String(client_tag).slice(0, CLIENT_TAG_MAX) : null,
     ts: Date.now(),
-  });
+  };
+  ledger.push(entry);
   if (ledger.length > LEDGER_MAX) ledger = ledger.slice(-LEDGER_MAX);
   persistLedger();
+  return entry; // so the caller can attach the resolved id (addResolvedId)
+}
+
+// Attach the resolved final bridge id to a ledger entry and mark it exact-id
+// authoritative, then persist so the resolution survives a restart. Idempotent.
+function addResolvedId(entry, finalID) {
+  if (!entry || !finalID) return;
+  const s = String(finalID);
+  if (!entry.sent_ids) entry.sent_ids = [];
+  if (!entry.sent_ids.includes(s)) entry.sent_ids.push(s);
+  entry.resolved = true;
+  persistLedger();
+}
+
+// Best-effort resolve a pendingMessageID to the final bridge id Beeper assigns
+// on ack. The ack is asynchronous, so GET the message back a few times until
+// its id differs from the pending one. Returns the final id, or null if it
+// never swapped within the retry budget (caller keeps the pending id + text
+// fallback). Never throws — a degraded echo-guard must never fail a send.
+async function resolveSentId(chatID, pendingMessageID) {
+  const pend = pendingMessageID ? String(pendingMessageID) : '';
+  if (!pend || !chatID || RESOLVE_RETRIES <= 0) return null;
+  for (let attempt = 0; attempt < RESOLVE_RETRIES; attempt++) {
+    try {
+      const m = await beeperFetch(
+        `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(pend)}`,
+        { timeoutMs: RESOLVE_TIMEOUT_MS },
+      );
+      // GET is by id → a single message object. Only trust that shape: a
+      // list/other response would let us read an arbitrary message's id and
+      // store the WRONG final id, which would mis-tag an unrelated read-back.
+      const id = m && m.id != null ? String(m.id) : null;
+      if (id && id !== pend) return id; // swapped to the real bridge id
+    } catch { /* not acked yet, timed out, or transient — retry */ }
+    if (attempt < RESOLVE_RETRIES - 1 && RESOLVE_DELAY_MS > 0) {
+      await new Promise((r) => setTimeout(r, RESOLVE_DELAY_MS));
+    }
+  }
+  return null;
 }
 
 // Pure: decide api-vs-external origin + echoed client_tag for one message
 // given the ledger entries and a `now`. Exact id match first (high
 // confidence); content fallback only for our own recent same-chat sends.
 function matchSentMessage(msg, entries, now) {
+  const mid = String(msg.id);
+  // 1. Exact id match — high confidence. Checks every id the send is known by:
+  //    the pendingMessageID and (once resolved) the final bridge id, so a
+  //    read-back matches whether or not Beeper swapped the id on ack. Tolerates
+  //    the legacy single-`sent_id` entry shape for ledgers written pre-upgrade.
   for (const e of entries) {
     if (e.chat_id !== msg.chat_id) continue;
-    if (e.sent_id && String(msg.id) === e.sent_id) {
-      return { source: 'api', client_tag: e.client_tag || null };
+    const ids = e.sent_ids || (e.sent_id ? [e.sent_id] : []);
+    for (const id of ids) {
+      if (id && String(id) === mid) return { source: 'api', client_tag: e.client_tag || null };
     }
   }
+  // 2. Last-ditch text fallback — ONLY for our own (is_self) messages, same
+  //    chat, recent window, AND only against entries whose final id we could
+  //    NOT resolve (resolved !== true). Once an entry is resolved, step 1 is
+  //    authoritative for it; skipping its text match is what keeps a human
+  //    re-typing identical text from being mis-tagged as ours and dropped.
   if (msg.is_self) {
     const h = textHash(msg.text);
     for (const e of entries) {
       if (e.chat_id !== msg.chat_id) continue;
+      if (e.resolved === true) continue;
       if (e.text_hash === h && (now - e.ts) <= LEDGER_TEXT_WINDOW_MS) {
         return { source: 'api', client_tag: e.client_tag || null };
       }
@@ -668,13 +765,19 @@ async function callTool(name, args) {
         `/v1/chats/${encodeURIComponent(chatID)}/messages`,
         { method: 'POST', body: { text: args.text } },
       );
-      const messageID = String(sent?.pendingMessageID || '');
+      const pendingID = String(sent?.pendingMessageID || '');
       // Echo-guard: record so poll_messages / read_chat can tag this
       // self-note source:'api' and the agent won't re-process its own note.
-      recordSent({ chat_id: chatID, sent_id: messageID, text: args.text, client_tag: args.client_tag });
+      const entry = recordSent({ chat_id: chatID, sent_id: pendingID, text: args.text, client_tag: args.client_tag });
+      // Resolve the pending id to the final bridge id so the guard matches the
+      // read-back by exact id, not fragile text. Best-effort — null on timeout.
+      const finalID = await resolveSentId(chatID, pendingID);
+      if (finalID) addResolvedId(entry, finalID);
       return {
         chat_id: chatID,
-        message_id: messageID,
+        message_id: finalID || pendingID,
+        pending_message_id: pendingID,
+        resolved: !!finalID,
         client_tag: args.client_tag || null,
         status: 'sent',
       };
@@ -690,13 +793,19 @@ async function callTool(name, args) {
         { method: 'POST', body },
       );
       const chatID = sent?.chatID || args.chat_id;
-      const messageID = String(sent?.pendingMessageID || '');
+      const pendingID = String(sent?.pendingMessageID || '');
       // Echo-guard: record so a poll_messages loop can skip the bot's own
       // reply (source:'api') instead of treating it as a new inbound message.
-      recordSent({ chat_id: chatID, sent_id: messageID, text: args.text, client_tag: args.client_tag });
+      const entry = recordSent({ chat_id: chatID, sent_id: pendingID, text: args.text, client_tag: args.client_tag });
+      // Resolve the pending id to the final bridge id so the guard matches the
+      // read-back by exact id, not fragile text. Best-effort — null on timeout.
+      const finalID = await resolveSentId(chatID, pendingID);
+      if (finalID) addResolvedId(entry, finalID);
       return {
         chat_id: chatID,
-        message_id: messageID,
+        message_id: finalID || pendingID,
+        pending_message_id: pendingID,
+        resolved: !!finalID,
         client_tag: args.client_tag || null,
         status: 'sent',
       };
@@ -972,6 +1081,7 @@ module.exports = {
   textHash,
   matchSentMessage,
   recordSent,
+  addResolvedId,
   loadLedger,
   // test hook: drop the in-memory ledger so a test can re-load from a fresh path
   _resetLedger: () => { ledger = null; ledgerPersistWarned = false; },

@@ -44,8 +44,11 @@ echo "[..] starting beeper desktop"
 # do not pass --disable-gpu: recent beeper builds bail in their crash-reporter
 # init when the gpu process is disabled, leaving a black vnc screen. instead
 # we ship libgl1-mesa-dri so electron falls back to software gl via mesa.
-/opt/beeper/beepertexts --no-sandbox --disable-dev-shm-usage 2>&1 &
-BEEPER_PID=$!
+launch_beeper() {
+  /opt/beeper/beepertexts --no-sandbox --disable-dev-shm-usage 2>&1 &
+  BEEPER_PID=$!
+}
+launch_beeper
 sleep 5
 
 # beeper api binds to 127.0.0.1:23373 — forward 0.0.0.0:23380 -> 127.0.0.1:23373 so docker can expose it.
@@ -82,9 +85,91 @@ echo "  api:   http://localhost:23373"
 # (matrix sync flush, sqlite checkpoint) instead of the 10s SIGKILL fallback.
 # Bash's `wait` does NOT auto-propagate signals to children, so without this
 # trap the container exits but Beeper is killed mid-write.
-trap 'kill -TERM "$BEEPER_PID" 2>/dev/null' TERM INT
-# Loop: bash interrupts `wait` on trap delivery, so a single wait would return
-# before Beeper has finished flushing. Re-wait until the PID is actually gone.
-while kill -0 "$BEEPER_PID" 2>/dev/null; do
-  wait "$BEEPER_PID" 2>/dev/null || true
+SHUTTING_DOWN=0
+trap 'SHUTTING_DOWN=1; kill -TERM "$BEEPER_PID" 2>/dev/null' TERM INT
+
+# ─── supervise beeper desktop ─────────────────────────────────────
+# beepertexts is the one process whose death silently breaks everything: the
+# MCP layer (:23375) and forwarder stay up and keep ANSWERING, but every tool
+# call fails because the API (:23373) is gone — a "half-dead" container that
+# looks healthy to a human while serving nothing, and never self-heals. Worse,
+# the Electron launcher can linger after its API/renderer process crashes, so
+# watching the top-level PID alone misses it. We supervise on BOTH signals:
+# relaunch if the process dies, AND recycle it if the API stays down after we
+# have seen it up.
+#
+# The API_WAS_UP gate is load-bearing. On first run the user has not enabled
+# "Start API on launch" yet, so :23373 is down BY DESIGN until they log in via
+# noVNC. Recycling beepertexts every interval in that state would make login
+# impossible. So we only ever recycle-for-API-down once the API has come up at
+# least once this run; a never-logged-in container just runs Beeper steadily
+# and waits for the human — exactly the prior behavior.
+SUPERVISE=${BEEPERBOX_SUPERVISE:-1}
+SUPERVISE_INTERVAL=${BEEPERBOX_SUPERVISE_INTERVAL:-10}    # seconds between checks
+SUPERVISE_API_GRACE=${BEEPERBOX_SUPERVISE_API_GRACE:-6}   # consecutive API-down checks (after up) before recycle (~60s)
+# Sanitize to positive integers. A non-numeric value makes `sleep`/`-ge` fail
+# instantly and would spin the loop at 100% CPU (and hammer the API probe); 0
+# is a no-wait spin too. Fall back to the documented default on anything else.
+case $SUPERVISE_INTERVAL in ''|*[!0-9]*) SUPERVISE_INTERVAL=10 ;; esac
+case $SUPERVISE_API_GRACE in ''|*[!0-9]*) SUPERVISE_API_GRACE=6 ;; esac
+[ "$SUPERVISE_INTERVAL" -ge 1 ] 2>/dev/null || SUPERVISE_INTERVAL=10
+[ "$SUPERVISE_API_GRACE" -ge 1 ] 2>/dev/null || SUPERVISE_API_GRACE=6
+
+# Block until Beeper has fully exited, re-waiting because a trap interrupts
+# `wait` before the child finishes flushing.
+wait_beeper() {
+  while kill -0 "$BEEPER_PID" 2>/dev/null; do
+    wait "$BEEPER_PID" 2>/dev/null || true
+  done
+}
+
+if [ "$SUPERVISE" != "1" ]; then
+  echo "[ok] supervision disabled (BEEPERBOX_SUPERVISE=$SUPERVISE) — waiting on beepertexts"
+  wait_beeper
+  exit 0
+fi
+
+echo "[ok] supervising beepertexts (interval ${SUPERVISE_INTERVAL}s, api-down grace ${SUPERVISE_API_GRACE})"
+# NOTE: `set -e` is active. Every failure-prone command in this loop is guarded
+# (`curl`/`kill -0` inside `if`, `kill`/`sleep` with `|| true`) so a non-zero
+# exit can't terminate supervision. Keep that discipline on any new command.
+API_WAS_UP=0
+API_DOWN_STREAK=0
+while true; do
+  # Clean shutdown requested (docker stop): let Beeper flush, then exit.
+  if [ "$SHUTTING_DOWN" = "1" ]; then
+    wait_beeper
+    break
+  fi
+
+  # Process gone entirely → relaunch on the existing display (Xvfb still up).
+  if ! kill -0 "$BEEPER_PID" 2>/dev/null; then
+    # If a SIGTERM landed in this window, don't spawn a fresh Beeper just to
+    # immediately stop it — the process is already gone, so exit cleanly.
+    [ "$SHUTTING_DOWN" = "1" ] && break
+    echo "[!!] beepertexts exited — relaunching"
+    launch_beeper
+    API_DOWN_STREAK=0
+    sleep "$SUPERVISE_INTERVAL" || true
+    continue
+  fi
+
+  # Process alive: watch the API to catch the half-dead case.
+  if curl -sf http://127.0.0.1:23373/v1/spec > /dev/null 2>&1; then
+    [ "$API_WAS_UP" = "0" ] && echo "[ok] beeper api up — half-dead guard armed"
+    API_WAS_UP=1
+    API_DOWN_STREAK=0
+  elif [ "$API_WAS_UP" = "1" ]; then
+    API_DOWN_STREAK=$((API_DOWN_STREAK + 1))
+    if [ "$API_DOWN_STREAK" -ge "$SUPERVISE_API_GRACE" ]; then
+      echo "[!!] beeper api down ${API_DOWN_STREAK} checks but process alive — recycling beepertexts (half-dead guard)"
+      kill -TERM "$BEEPER_PID" 2>/dev/null || true
+      for _ in 1 2 3; do kill -0 "$BEEPER_PID" 2>/dev/null || break; sleep 1 || true; done
+      kill -KILL "$BEEPER_PID" 2>/dev/null || true
+      launch_beeper
+      API_DOWN_STREAK=0
+    fi
+  fi
+
+  sleep "$SUPERVISE_INTERVAL" || true
 done

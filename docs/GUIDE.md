@@ -490,7 +490,7 @@ If you call `/v1/*` directly instead of going through the MCP tools, you inherit
   - **Group** = `chat.type === 'group'` (and not note-to-self) — there is no `isGroup` field.
   - **Last activity** = `chat.lastActivity` (camelCase ISO 8601), not `last_activity`.
   - **Sender-is-self** = `message.isSender === true` — true for anything the account sent from *any* client, so it is *not* an "I sent it via the API" signal (the `source` field the MCP layer adds is a beeperbox-side ledger with no raw-API equivalent).
-  - **Sent message id** = `POST .../messages` returns `pendingMessageID`, a local pending id Beeper replaces with a real id on bridge ack — don't treat it as a stable delivered id.
+  - **Sent message id** = `POST .../messages` returns `pendingMessageID`, a local pending id Beeper replaces with a real id on bridge ack — don't treat it as a stable delivered id. To get the final id, GET `.../messages/{pendingMessageID}` until its `id` differs (the swap is async); the MCP layer does this for you and returns `message_id` / `resolved`.
 
 ## MCP tools reference
 
@@ -507,7 +507,7 @@ beeperbox exposes 11 semantic tools over Model Context Protocol on two interchan
 | `get_chat` | `chat_id` | `Chat` | Refresh one chat's state before replying |
 | `read_chat` | `chat_id` | Array of `Message` (oldest first) | Pull conversation context for the LLM to reason about |
 | `search_messages` | `query` | Array of `Message` | Follow-up lookups, historical context, "what did X say about Y" |
-| `send_message` | `chat_id`, `text` | `{chat_id, message_id, client_tag, status}` | The headline reply/notify tool (optional `client_tag` echo key) |
+| `send_message` | `chat_id`, `text` | `{chat_id, message_id, pending_message_id, resolved, client_tag, status}` | The headline reply/notify tool (optional `client_tag` echo key). `message_id` is the resolved final bridge id when `resolved: true`, else the pending id |
 | `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves to the Beeper-native Note to self chat (won't leak into per-platform saved-messages chats) |
 | `react_to_message` | `chat_id`, `message_id`, `emoji` | `{...status: reacted}` | Lightweight ack, no full reply needed |
 | `archive_chat` | `chat_id` | `{chat_id, archived}` | Clean handled chats out of inbox (closest primitive to mark-as-read that Beeper exposes) |
@@ -963,6 +963,8 @@ docker exec beeperbox curl -sf http://127.0.0.1:23373/v1/info > /dev/null && ech
 
 - If that prints `API OK`: socat is the problem. Restart the container.
 - If it prints `API DOWN`: Beeper API isn't running. You probably haven't enabled it yet — go back to [first-run setup](#first-run-setup) step 3, or you forgot to turn on **Start API on launch**.
+
+Once you have logged in and the API has come up at least once, the entrypoint **supervises** beepertexts — if it later crashes (process death, or the launcher lingering with a dead API), it is relaunched/recycled automatically, so the half-dead "MCP answers but every tool call fails" state self-heals within ~60s. Tune or disable it with `BEEPERBOX_SUPERVISE` / `BEEPERBOX_SUPERVISE_INTERVAL` / `BEEPERBOX_SUPERVISE_API_GRACE`. The supervisor never recycles before that first login (the API is down by design until you enable it).
 
 ### `401 Unauthorized` on every call except `/v1/info`
 
