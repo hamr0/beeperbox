@@ -198,7 +198,7 @@ If you see an error, jump to [Troubleshooting](#troubleshooting).
 
 ### What you can do next
 
-- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports stdio or HTTP transport can consume beeperbox as a tool source. Configure it once and the LLM sees all 10 tools (`list_inbox`, `list_unread`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`, `send_message`, `note_to_self`, `react_to_message`, `archive_chat`). See the [MCP tools reference](#mcp-tools-reference) section below.
+- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports stdio or HTTP transport can consume beeperbox as a tool source. Configure it once and the LLM sees all 11 tools (`list_inbox`, `list_unread`, `poll_messages`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`, `send_message`, `note_to_self`, `react_to_message`, `archive_chat`). See the [MCP tools reference](#mcp-tools-reference) section below.
 - **Build something custom**: hit the raw Beeper API on `http://localhost:23373/v1/*` from any language with an HTTP client and your `BEEPER_TOKEN`. See [Use it — real examples](#use-it--real-examples) for curl / Node / Python snippets.
 - **Deploy to a VPS**: same steps work on any Linux box with Docker. SSH-tunnel noVNC for the one-time login. See [Deploy to a VPS](#deploy-to-a-vps).
 
@@ -478,24 +478,43 @@ As of Beeper Desktop 4.2.715, the endpoints are:
 /v1/spec
 ```
 
+### The raw `/v1/` contract (quirks the MCP layer absorbs)
+
+If you call `/v1/*` directly instead of going through the MCP tools, you inherit the same quirks the MCP normalizers handle for you. Match these and a raw consumer behaves identically:
+
+- **`?limit=N` is a *lower* bound, not an upper one.** `GET /v1/chats?limit=N` and `GET /v1/chats/{chatID}/messages?limit=N` return **~25 items minimum regardless of `N`**. The MCP layer over-fetches `max(N, 25)` then slices to `N` client-side — do the same; don't trust the count.
+- **No server-side cursor / `since=` param.** The API is request/response only. To enumerate *new* messages since a prior poll (what `poll_messages` does internally): list chats, keep those whose `lastActivity` is `>=` your high-water timestamp, page each one's messages, keep messages whose `timestamp` is **strictly after** your cursor, and **dedup same-millisecond ties by id** (track the ids seen at the high-water timestamp — this is the off-by-one hand-rolled pollers miss). Then advance your stored `(timestamp, ids@timestamp)`. Bounded by Beeper's ~20-chat live sync, same as everything else. **Prefer the `poll_messages` MCP tool** — this recipe is only for raw consumers that can't use MCP.
+- **Canonical field heuristics** (apply these to agree with the MCP `Chat`/`Message` shapes):
+  - **Network** is not in the room id — resolve `chat.accountID` against `GET /v1/accounts` → `account.network`, then slug it (cache the map per session).
+  - **Note-to-self** = `chat.participants.total === 1 && chat.participants.items[0].isSelf === true` (catches Beeper-native Note to self *and* each platform's saved-messages chat; `list_inbox`/`list_unread` filter these out).
+  - **Group** = `chat.type === 'group'` (and not note-to-self) — there is no `isGroup` field.
+  - **Last activity** = `chat.lastActivity` (camelCase ISO 8601), not `last_activity`.
+  - **Sender-is-self** = `message.isSender === true` — true for anything the account sent from *any* client, so it is *not* an "I sent it via the API" signal (the `source` field the MCP layer adds is a beeperbox-side ledger with no raw-API equivalent).
+  - **Sent message id** = `POST .../messages` returns `pendingMessageID`, a local pending id Beeper replaces with a real id on bridge ack — don't treat it as a stable delivered id.
+
 ## MCP tools reference
 
-beeperbox exposes 10 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
+beeperbox exposes 11 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
 
-### The 10 tools
+### The 11 tools
 
 | Tool | Required | Returns | Use case |
 |---|---|---|---|
 | `list_accounts` | — | Array of accounts with `network` slug + `network_label` | Discover which platforms are reachable at session start |
 | `list_inbox` | — | Array of `Chat` | Triage: what's happening right now |
 | `list_unread` | — | Array of `Chat` (unread only) | "What needs my attention?" — primary inbox check |
+| `poll_messages` | — | `{cursor, messages: Message[], has_more}` | Watch loop: "what's new since I last looked?" — passive, restart-resumable, echo-guarded |
 | `get_chat` | `chat_id` | `Chat` | Refresh one chat's state before replying |
 | `read_chat` | `chat_id` | Array of `Message` (oldest first) | Pull conversation context for the LLM to reason about |
 | `search_messages` | `query` | Array of `Message` | Follow-up lookups, historical context, "what did X say about Y" |
-| `send_message` | `chat_id`, `text` | `{chat_id, message_id, status}` | The headline reply/notify tool |
+| `send_message` | `chat_id`, `text` | `{chat_id, message_id, client_tag, status}` | The headline reply/notify tool (optional `client_tag` echo key) |
 | `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves to the Beeper-native Note to self chat (won't leak into per-platform saved-messages chats) |
 | `react_to_message` | `chat_id`, `message_id`, `emoji` | `{...status: reacted}` | Lightweight ack, no full reply needed |
 | `archive_chat` | `chat_id` | `{chat_id, archived}` | Clean handled chats out of inbox (closest primitive to mark-as-read that Beeper exposes) |
+
+#### `poll_messages` — the watch loop
+
+A passive new-messages-since-cursor feed; the right tool for an agent that wants to *react* to incoming messages instead of repeatedly diffing `list_inbox` by hand. **Read-only** — it never marks read, archives, or mutates. First call (omit `cursor`) **seeds** from now and returns `{cursor, messages: [], seeded: true}`; pass the cursor back each subsequent call to get only newer messages plus a fresh cursor. The cursor is opaque and **restart-resumable** — persist it and resume across restarts with no missed or duplicated messages (same-millisecond messages are deduplicated by id). `has_more: true` means more is immediately fetchable — keep polling until it's `false`, then sleep. (Residual: beeperbox reads up to the newest 100 messages per chat per poll, so a chat receiving more than 100 messages between two polls can lose the oldest of that burst — Beeper's API has no backward paging; poll frequently enough, or backfill with `read_chat`.) Includes the account's own messages on purpose; branch on each message's **`source`** field (`"api"` = sent by this beeperbox, skip it; `"external"` = everything else including the owner's own Note-to-self commands) rather than `sender.is_self`, which can't tell the agent's API sends from the human's own typing. The poll interval is yours — beeperbox provides the *ability* to watch, not a *policy* about cadence.
 
 ### Schemas the LLM learns once and reuses everywhere
 
@@ -515,12 +534,16 @@ Message:
   chat_id          the chat this message belongs to (always present, no second lookup)
   network          machine slug (same as Chat)
   network_label    human name (same as Chat)
-  sender           { id, name, is_self }
+  sender           { id, name, is_self }   # is_self = sent by my account from ANY client
   text             message body (or "[MEDIA]" / "[non-text]" for non-text types)
   type             "TEXT" | "MEDIA" | ...
   timestamp        ISO 8601
   reply_to         parent message id if this is a reply, else null
+  source           "api" if THIS beeperbox sent it (send_message/note_to_self), else "external"
+  client_tag       the client_tag passed at send time, echoed back; else null
 ```
+
+`source` is the echo-guard: on one account both the owner's own messages and the agent's API replies are `is_self: true`, so only `source` distinguishes "I sent this programmatically" (skip it in a poll loop) from "external" (act on it). See the [context guide](../beeperbox.context.md) for the matcher's best-effort caveats.
 
 ### Calling a tool via HTTP (from any host/language)
 

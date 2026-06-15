@@ -52,6 +52,13 @@ services:
       # empty to keep the password-less one-time-login flow (safe only while
       # :6080 stays loopback-only, the default above).
       VNC_PASSWORD: ${VNC_PASSWORD:-}
+      # Optional path for the echo-guard sent-message ledger (lets poll_messages
+      # / read_chat mark the agent's own API sends source:"api"). Leave empty to
+      # use the default inside the config volume below
+      # (/root/.config/beeperbox-sent-ledger.json) — only override to relocate
+      # it. Best-effort: a failed write degrades the guard to in-memory, never
+      # fails a send.
+      BEEPERBOX_SENT_LEDGER: ${BEEPERBOX_SENT_LEDGER:-}
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'
