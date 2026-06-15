@@ -193,6 +193,73 @@ test('matchSentMessage: no match is external with no tag', () => {
   assert.deepEqual(got, { source: 'external', client_tag: null });
 });
 
+// ── Ask A: reliable echo via resolved bridge id ───────────────────
+test('matchSentMessage: a read-back is tagged by its RESOLVED final bridge id', () => {
+  // After send, pendingMessageID 'p1' was resolved to final id 'b908'; the
+  // ledger holds both. The message reappears under the final id → exact match.
+  const entries = [{ chat_id: 'c1', sent_ids: ['p1', 'b908'], resolved: true, text_hash: S.textHash('hey'), client_tag: 'job-9', ts: NOW }];
+  const got = S.matchSentMessage({ id: 'b908', chat_id: 'c1', text: 'hey', is_self: true }, entries, NOW);
+  assert.deepEqual(got, { source: 'api', client_tag: 'job-9' });
+});
+
+test('matchSentMessage: once resolved, a human re-typing identical text is NOT mis-tagged (Ask A acceptance)', () => {
+  // The load-bearing acceptance criterion. The bot sent "on my way" (resolved
+  // to final id b908). The human owner later types the exact same words. Exact
+  // id is authoritative for the resolved entry, so its text fallback is OFF —
+  // the human message stays external instead of being swallowed as our echo.
+  const entries = [{ chat_id: 'c1', sent_ids: ['p1', 'b908'], resolved: true, text_hash: S.textHash('on my way'), client_tag: null, ts: NOW }];
+  assert.equal(S.matchSentMessage({ id: 'b908', chat_id: 'c1', text: 'on my way', is_self: true }, entries, NOW).source, 'api');
+  assert.equal(S.matchSentMessage({ id: 'human1', chat_id: 'c1', text: 'on my way', is_self: true }, entries, NOW).source, 'external');
+});
+
+test('matchSentMessage: two identical-text sends are each matched by their OWN resolved id', () => {
+  // Identical text, two separate sends — exact-id keeps them distinct so each
+  // read-back echoes its own client_tag (text matching alone could not).
+  const entries = [
+    { chat_id: 'c1', sent_ids: ['pA', 'bA'], resolved: true, text_hash: S.textHash('ok'), client_tag: 'a', ts: NOW },
+    { chat_id: 'c1', sent_ids: ['pB', 'bB'], resolved: true, text_hash: S.textHash('ok'), client_tag: 'b', ts: NOW },
+  ];
+  assert.deepEqual(S.matchSentMessage({ id: 'bA', chat_id: 'c1', text: 'ok', is_self: true }, entries, NOW), { source: 'api', client_tag: 'a' });
+  assert.deepEqual(S.matchSentMessage({ id: 'bB', chat_id: 'c1', text: 'ok', is_self: true }, entries, NOW), { source: 'api', client_tag: 'b' });
+});
+
+test('matchSentMessage: an UNRESOLVED entry keeps the text fallback as a safety net', () => {
+  // Resolution failed (slow ack) so we only have the pending id and the read-
+  // back uses a swapped id we never learned. The text fallback (resolved:false)
+  // still catches our own send — preserving today's behavior when resolution
+  // is unavailable, which is exactly when the net is needed.
+  const entries = [{ chat_id: 'c1', sent_ids: ['pending-only'], resolved: false, text_hash: S.textHash('ping'), client_tag: 'j1', ts: NOW }];
+  const got = S.matchSentMessage({ id: 'swapped-unknown', chat_id: 'c1', text: 'ping', is_self: true }, entries, NOW);
+  assert.deepEqual(got, { source: 'api', client_tag: 'j1' });
+});
+
+test('addResolvedId attaches the final id, retires the text fallback, and persists', () => {
+  const file = path.join(os.tmpdir(), `bb-resolve-test-${process.pid}.json`);
+  try { fs.unlinkSync(file); } catch { /* not there */ }
+  process.env.BEEPERBOX_SENT_LEDGER = file;
+  try {
+    S._resetLedger();
+    const entry = S.recordSent({ chat_id: 'c1', sent_id: 'pending1', text: 'hi', client_tag: 't' });
+    assert.equal(entry.resolved, false);
+    S.addResolvedId(entry, 'final1');
+
+    // Matches by the resolved id AND still by the original pending id (covers a
+    // platform/read path that never swapped).
+    assert.equal(S.matchSentMessage({ id: 'final1', chat_id: 'c1', text: 'hi', is_self: true }, S.loadLedger(), Date.now()).source, 'api');
+    assert.equal(S.matchSentMessage({ id: 'pending1', chat_id: 'c1', text: 'hi', is_self: true }, S.loadLedger(), Date.now()).source, 'api');
+
+    // Reload from disk → the resolution survived a "restart".
+    S._resetLedger();
+    const reloaded = S.loadLedger();
+    assert.equal(reloaded[0].resolved, true);
+    assert.deepEqual([...reloaded[0].sent_ids].sort(), ['final1', 'pending1']);
+  } finally {
+    try { fs.unlinkSync(file); } catch { /* ignore */ }
+    delete process.env.BEEPERBOX_SENT_LEDGER;
+    S._resetLedger();
+  }
+});
+
 test('recordSent caps an oversized client_tag (ledger-bloat guard)', () => {
   const file = path.join(os.tmpdir(), `bb-cap-test-${process.pid}.json`);
   try { fs.unlinkSync(file); } catch { /* not there */ }

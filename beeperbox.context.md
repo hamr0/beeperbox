@@ -199,8 +199,8 @@ while (true) {
 Send a text message to a chat. Markdown supported.
 
 **Arguments:** `{chat_id: string, text: string, reply_to_message_id?: string, client_tag?: string}`.
-**Returns:** `{chat_id, message_id, client_tag, status: "sent"}`.
-**Note:** `message_id` is Beeper's `pendingMessageID` — use it for downstream `react_to_message` on the just-sent message.
+**Returns:** `{chat_id, message_id, pending_message_id, resolved, client_tag, status: "sent"}`.
+**Note:** `message_id` is the **final bridge id** when beeperbox could resolve it (`resolved: true`), else the `pendingMessageID` (`resolved: false`). `pending_message_id` is always the raw pending id. Use `message_id` for downstream `react_to_message`. The resolution is what lets the echo-guard match read-backs by **exact id**, not text (see the Message schema caveat).
 **`client_tag` (echo-guard):** optional idempotency/echo key. beeperbox records it against this send and echoes it back on the message — marked `source: "api"` — when it reappears in `poll_messages` / `read_chat`. Lets an agent recognize and skip its own programmatic sends without a brittle text-prefix hack (see `poll_messages` and the Message schema).
 
 ### `note_to_self`
@@ -208,7 +208,7 @@ Send a text message to a chat. Markdown supported.
 Send a message to the bot's own Beeper-native Note to self chat. Auto-resolves the correct chat ID, so no `chat_id` parameter needed.
 
 **Arguments:** `{text: string, client_tag?: string}`.
-**Returns:** `{chat_id, message_id, client_tag, status: "sent"}`.
+**Returns:** `{chat_id, message_id, pending_message_id, resolved, client_tag, status: "sent"}` — same shape as `send_message` (`message_id` is the resolved final id when `resolved: true`).
 **`client_tag`:** same echo-guard semantics as `send_message` — recorded and echoed back as `source: "api"` on read-back, so a `poll_messages` loop can skip the agent's own self-notes.
 **Use for:** agent self-notes ("processed 5 customer messages"), debug output, scheduled reminders, anything you want recorded but NOT seen by anyone else. The note-to-self chat is excluded from `list_inbox` / `list_unread` / `search_messages`, so messages here will not pollute customer views.
 
@@ -294,7 +294,7 @@ Two normalized shapes. Learn them once and every tool returns the same thing.
 | `source` | **`"api"`** if *this* beeperbox sent the message via `send_message` / `note_to_self`; **`"external"`** otherwise. This — not `is_self` — is the echo-guard: on one account both the owner's own typed messages and the agent's API replies are `is_self: true`, so only `source` can tell "I sent this programmatically" from "the human owner sent this". Skip `source === "api"` in a poll loop; process `"external"` (the owner's own Note-to-self commands included). |
 | `client_tag` | The `client_tag` passed to `send_message` / `note_to_self` for this message, echoed back, else `null`. An idempotency key the agent can correlate to a specific send. |
 
-> **`source` matching is best-effort and unverified against a live Beeper account** (CI has none). The primary match is the `pendingMessageID` returned by the send; because Beeper may swap that for a real bridge id on ack, a content-based fallback also matches, but only for the account's own (`is_self`) messages in the same chat within a 15-minute window — deliberately conservative so a human re-typing identical text is never mis-tagged and dropped. The ledger is persisted to the config volume so the guard survives restarts. Validate against your own account before relying on it for a high-stakes auto-responder, and keep a secondary guard if a missed echo would be costly.
+> **`source` matching is primarily by exact id; best-effort and unverified against a live Beeper account** (CI has none). On send, beeperbox resolves the `pendingMessageID` to the **final bridge id** Beeper assigns on ack (it GETs the message back until the id swaps) and records both, so a read-back matches by **exact id** whether or not the swap happened. A content-based fallback survives only as a last-ditch net, and **only for sends whose final id could not be resolved** — matching the account's own (`is_self`) messages in the same chat within a 15-minute window. Once a send is resolved, its text fallback is retired, so a human re-typing identical text is **not** mis-tagged as the agent's own and dropped. The ledger is persisted to the config volume so the guard survives restarts. Validate against your own account before relying on it for a high-stakes auto-responder, and keep a secondary guard if a missed echo would be costly.
 
 ## Raw `/v1/` contract (for direct-API consumers)
 
