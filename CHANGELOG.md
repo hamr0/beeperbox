@@ -36,6 +36,9 @@ First feature driven by a real consumer ([multis](https://github.com/hamr0/multi
 ### Documentation
 - **README — added a shared "The bare ecosystem" section** (Core / Optional-reach list covering all six modules: `bareagent` · `bareguard` · `litectx`, plus `barebrowse` · `baremobile` · `beeperbox`). beeperbox sits under optional reach as the messaging member. The same section now ships across all six repos. Docs only — no container/runtime change.
 
+### Fixed — `docker restart` no longer segfaults the display `[PATCH]`
+- **`docker restart` reliably wedged the container with a stale Xvfb lock.** `docker restart` re-runs the entrypoint but preserves the container's writable layer, so Xvfb's `/tmp/.X99-lock` from the previous boot survived into the new process. Xvfb then saw display `:99` as "already active", half-initialized it, and **segfaulted** (`(EE) Server is already active for display 99`) — the backend never bound `127.0.0.1:23373`, socat looped on connection-refused, and the container sat stuck in `health: starting`. Only a full `docker compose down && up` (which discards `/tmp`) recovered. The entrypoint now removes the stale `/tmp/.X99-lock` and `/tmp/.X11-unix/X99` before starting Xvfb, so `docker restart` — the natural operation after any config change — is survivable. No runtime-contract change (MCP tools, HTTP API, schemas, ports bit-identical); PATCH per the versioning policy.
+
 ## [0.5.1] — 2026-05-25 `[PATCH]`
 
 Release-pipeline hardening and documentation. PATCH per the versioning policy — these change how releases are *built and described*, not what the running container does: the MCP tool surface, raw/HTTP API, `Chat`/`Message` schemas, and default ports are bit-identical to v0.5.0, and no client-code edits are required. The headline is that the release path is now **gated on the guard tests** with a `:previous` rollback tag, so a broken upstream Beeper can no longer silently become `:latest`.

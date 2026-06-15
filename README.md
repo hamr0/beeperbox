@@ -40,7 +40,7 @@ echo "BEEPER_TOKEN=abc123..." > .env
 docker compose up -d
 ```
 
-Login and bridge state persist in a named volume — you won't log in again after restarts.
+Login and bridge state persist in a named volume — you won't log in again after restarts, and `docker restart` recovers cleanly (the entrypoint clears the stale display lock that used to wedge a restarted container).
 
 **3. Talk to it**
 

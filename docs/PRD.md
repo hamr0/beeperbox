@@ -156,6 +156,7 @@ Every chat and message carries both `network` (machine slug: `whatsapp`, `telegr
 - **One-time login, persistent state.** Named volume holds login + bridge state; survives restart/rebuild/reboot. Bridges configured on an existing Beeper account (e.g. on a phone) inherit automatically — bridge state lives on Beeper's servers.
 - **Healthcheck.** Docker `HEALTHCHECK` probes the API through the same socat path external clients use, so a crashed API *or* forwarder marks the container unhealthy. Paired with `restart: unless-stopped`.
 - **Clean shutdown.** The entrypoint traps SIGTERM/SIGINT and forwards to Beeper Desktop, waiting for full reap so matrix sync / sqlite checkpoint flush before exit (no partial writes on `docker stop`).
+- **Restart-survivable display.** `docker restart` preserves the container's writable layer, so the entrypoint clears the stale Xvfb lock (`/tmp/.X99-lock`, `/tmp/.X11-unix/X99`) before starting Xvfb — otherwise the surviving lock makes Xvfb half-initialize `:99` and segfault, wedging the stack until a full recreate. `docker restart` (the natural op after a config change) now recovers cleanly.
 - **Multi-instance density.** Env-overridable ports + container name let many single-tenant instances share one VPS (density guidance in [`GUIDE.md`](GUIDE.md)).
 
 ---
