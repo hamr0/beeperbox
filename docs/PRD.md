@@ -104,6 +104,8 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1,[::1]` | Host/Origin allowlist (DNS-rebinding defense); set when a reverse proxy fronts a custom hostname. |
 | `MCP_MAX_BODY` | 1 MiB | Request body cap on the MCP HTTP transport; over-cap ⇒ `413`. |
 | `BEEPERBOX_SENT_LEDGER` | `/root/.config/beeperbox-sent-ledger.json` | Path to the echo-guard sent-message ledger (inside the persisted config volume). Best-effort; a failed write degrades the `source` guard to in-memory for that run, never fails a send. |
+| `BEEPERBOX_RESOLVE_RETRIES` / `_DELAY_MS` / `_TIMEOUT_MS` | `4` / `250` / `3000` | Echo-guard id resolution after a send: attempts to resolve `pendingMessageID` → final bridge id, delay between attempts, and per-attempt fetch timeout. Worst-case added send latency is bounded at `retries × (timeout + delay)`. Set retries `0` to disable resolution (falls back to text matching). |
+| `BEEPERBOX_SUPERVISE` / `_SUPERVISE_INTERVAL` / `_SUPERVISE_API_GRACE` | `1` / `10` / `6` | Backend supervision: enable (`0` = old forward-signal-and-wait), seconds between checks, and consecutive API-down checks (after the API has been up once) before recycling beepertexts. Non-numeric values fall back to the default. |
 | `VNC_PASSWORD` | unset | When set, the noVNC/x11vnc session requires a password (RFB security type *VNC auth*). |
 | `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; unset ⇒ rolling auto-update. |
 
