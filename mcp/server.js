@@ -6,6 +6,7 @@
 // Stdio transport will be added once HTTP is solid.
 
 const http = require('http');
+const crypto = require('crypto');
 
 const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
 const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
@@ -210,6 +211,12 @@ function normalizeMessage(raw, chat) {
     type: raw.type || 'TEXT',
     timestamp: raw.timestamp || null,
     reply_to: raw.replyTo || raw.reply_to || null,
+    // Echo-guard origin. Defaults assume "not sent through this beeperbox";
+    // applyEchoTags() upgrades to source:'api' (+ client_tag) for messages
+    // the send_message / note_to_self tools recorded. See the sent-ledger
+    // section below for why is_self alone can't tell these apart.
+    source: 'external',
+    client_tag: null,
   };
 }
 
@@ -230,6 +237,197 @@ function normalizeChat(raw, accounts) {
     last_message_at: raw.lastActivity || null,
     unread_count: raw.unreadCount || 0,
   };
+}
+
+// ─── poll cursor (pure, stateless, restart-resumable) ─────────────
+// The cursor is an opaque base64 of {ts, ids}: ts is the high-water
+// message timestamp delivered so far, ids are the message ids seen at
+// EXACTLY that ts. A message is "after" the cursor iff its ts is
+// strictly greater, OR equal-ts but its id was not already in `ids`.
+// The {ids} half is what makes same-millisecond messages dedup
+// correctly instead of one silently swallowing the other — the exact
+// seed/poll/dedup bug-class this primitive exists to retire. The caller
+// persists the opaque string and passes it back; because no state lives
+// server-side, resuming after a process/container restart is automatic.
+
+function encodeCursor(state) {
+  return Buffer
+    .from(JSON.stringify({ ts: state.ts || '', ids: state.ids || [] }), 'utf8')
+    .toString('base64');
+}
+
+// A legitimate cursor only ever carries the ids sharing one high-water
+// millisecond — at most a single poll page (≤100). Anything beyond this is a
+// crafted/corrupt cursor; reject it rather than pay O(n) per message scanning
+// `cur.ids.includes(...)` on attacker-chosen length.
+const CURSOR_IDS_MAX = 4096;
+
+function decodeCursor(cursor) {
+  if (!cursor) return null; // absent → seed mode (start from now)
+  let s;
+  try {
+    s = JSON.parse(Buffer.from(String(cursor), 'base64').toString('utf8'));
+  } catch {
+    s = undefined;
+  }
+  if (!s || typeof s.ts !== 'string' || !Array.isArray(s.ids)) {
+    throw rpcError(-32602, 'poll_messages: malformed cursor — pass back the exact cursor string from the previous response, or omit it to re-seed from now');
+  }
+  if (s.ids.length > CURSOR_IDS_MAX) {
+    throw rpcError(-32602, `poll_messages: cursor too large (${s.ids.length} ids) — it was not produced by this server; omit the cursor to re-seed`);
+  }
+  return { ts: s.ts, ids: s.ids.map(String) };
+}
+
+// ISO-8601 timestamps (Beeper emits `...Z`) sort lexicographically, so a
+// plain string compare is also a chronological compare.
+function isAfterCursor(msg, cur) {
+  if (!cur) return true;            // defensive; seed path returns early elsewhere
+  if (!msg.timestamp) return false; // unorderable → never enters the feed (can't advance past it)
+  if (msg.timestamp > cur.ts) return true;
+  if (msg.timestamp === cur.ts) return !cur.ids.includes(String(msg.id));
+  return false;
+}
+
+// Advance the cursor over the set we actually delivered (already filtered
+// as after `prev`). New high-water ts resets the id set to that ts; more
+// messages at the existing high-water ts accumulate into it.
+function advanceCursor(prev, delivered) {
+  let ts = prev ? prev.ts : '';
+  let ids = prev ? prev.ids.slice() : [];
+  for (const m of delivered) {
+    if (!m.timestamp) continue;
+    if (m.timestamp > ts) { ts = m.timestamp; ids = [String(m.id)]; }
+    else if (m.timestamp === ts) { ids.push(String(m.id)); }
+  }
+  return { ts, ids: [...new Set(ids)] };
+}
+
+// Pure: from the union of fresh (after-cursor) messages across all scanned
+// chats, hand back the OLDEST `page` and advance the cursor over EXACTLY
+// those. Delivering oldest-first (not newest) is what makes an over-`page`
+// burst recoverable: the cursor moves forward only past what the caller
+// actually received, so the newer remainder arrives on the next poll instead
+// of being skipped. `hasMore` is true iff there is an immediately-fetchable
+// remainder — i.e. re-polling now will return more.
+function selectDelivery(fresh, cur, page) {
+  const sorted = fresh.slice().sort((a, b) =>
+    a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1
+      : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const hasMore = sorted.length > page;
+  const delivered = hasMore ? sorted.slice(0, page) : sorted;
+  return { delivered, next: advanceCursor(cur, delivered), hasMore };
+}
+
+// ─── sent-message ledger (echo-guard) ─────────────────────────────
+// Distinguishes "this message was sent THROUGH beeperbox's own send API"
+// from "this message is from my Beeper account" (sender.is_self). On ONE
+// account both the human owner's own typed messages AND the agent's API
+// replies are is_self === true, so is_self cannot guard against an agent
+// re-processing its own sends. We record every message send_message /
+// note_to_self emits and tag it source:'api' (with any caller client_tag)
+// on read-back; everything else stays source:'external'. The ledger is
+// persisted to the config volume so the guard survives a restart — the
+// brittle text-prefix guard this replaces was restart-durable too.
+//
+// CAVEAT (unverifiable in CI — no live Beeper account; validate against a
+// real account before relying on it): the match key is the pendingMessageID
+// returned by the send, but Beeper may swap that for a real bridge id once
+// the message is acked. So a content fallback also matches, but ONLY for
+// our own (is_self) messages, in the same chat, inside a short window —
+// tight enough that a human re-typing identical text is not mis-tagged as
+// ours and silently dropped.
+
+const LEDGER_MAX = 500;
+const LEDGER_TEXT_WINDOW_MS = 15 * 60 * 1000;
+// Bound a caller-supplied client_tag so it can't bloat the persisted ledger
+// (the tag is an idempotency key — 256 chars is far more than any real one).
+const CLIENT_TAG_MAX = 256;
+
+function ledgerPath() {
+  return process.env.BEEPERBOX_SENT_LEDGER || '/root/.config/beeperbox-sent-ledger.json';
+}
+
+let ledger = null; // lazily loaded array of { chat_id, sent_id, text_hash, client_tag, ts }
+
+function textHash(text) {
+  return crypto.createHash('sha256')
+    .update(String(text == null ? '' : text).trim())
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function loadLedger() {
+  if (ledger) return ledger;
+  ledger = [];
+  try {
+    const fs = require('fs');
+    const arr = JSON.parse(fs.readFileSync(ledgerPath(), 'utf8'));
+    if (Array.isArray(arr)) ledger = arr.slice(-LEDGER_MAX);
+  } catch { /* best-effort: no ledger yet, unreadable, or bad json → start empty */ }
+  return ledger;
+}
+
+let ledgerPersistWarned = false;
+function persistLedger() {
+  try {
+    const fs = require('fs');
+    fs.writeFileSync(ledgerPath(), JSON.stringify(ledger.slice(-LEDGER_MAX)), { mode: 0o600 });
+  } catch (e) {
+    // Swallow — a degraded echo-guard must never take down a send. Warn once.
+    if (!ledgerPersistWarned) {
+      ledgerPersistWarned = true;
+      process.stderr.write(`[beeperbox-mcp] sent-ledger persist failed (${e.code || e.message}) — echo-guard degrades to in-memory for this run\n`);
+    }
+  }
+}
+
+function recordSent({ chat_id, sent_id, text, client_tag }) {
+  loadLedger();
+  ledger.push({
+    chat_id,
+    sent_id: sent_id ? String(sent_id) : null,
+    text_hash: textHash(text),
+    client_tag: client_tag ? String(client_tag).slice(0, CLIENT_TAG_MAX) : null,
+    ts: Date.now(),
+  });
+  if (ledger.length > LEDGER_MAX) ledger = ledger.slice(-LEDGER_MAX);
+  persistLedger();
+}
+
+// Pure: decide api-vs-external origin + echoed client_tag for one message
+// given the ledger entries and a `now`. Exact id match first (high
+// confidence); content fallback only for our own recent same-chat sends.
+function matchSentMessage(msg, entries, now) {
+  for (const e of entries) {
+    if (e.chat_id !== msg.chat_id) continue;
+    if (e.sent_id && String(msg.id) === e.sent_id) {
+      return { source: 'api', client_tag: e.client_tag || null };
+    }
+  }
+  if (msg.is_self) {
+    const h = textHash(msg.text);
+    for (const e of entries) {
+      if (e.chat_id !== msg.chat_id) continue;
+      if (e.text_hash === h && (now - e.ts) <= LEDGER_TEXT_WINDOW_MS) {
+        return { source: 'api', client_tag: e.client_tag || null };
+      }
+    }
+  }
+  return { source: 'external', client_tag: null };
+}
+
+// Stamp source/client_tag onto already-normalized messages.
+function applyEchoTags(messages, now) {
+  const entries = loadLedger();
+  return messages.map((m) => {
+    const meta = matchSentMessage(
+      { id: m.id, chat_id: m.chat_id, text: m.text, is_self: m.sender.is_self },
+      entries,
+      now,
+    );
+    return { ...m, source: meta.source, client_tag: meta.client_tag };
+  });
 }
 
 // ─── tool registry ────────────────────────────────────────────────
@@ -313,6 +511,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         text: { type: 'string', description: 'The note text. Markdown supported.', minLength: 1 },
+        client_tag: { type: 'string', description: 'Optional idempotency/echo tag. Recorded against this send and echoed back on the message as `client_tag` when it reappears in poll_messages / read_chat (where it is also marked source:"api"), so an agent can recognize and skip its own programmatic sends.' },
       },
       required: ['text'],
       additionalProperties: false,
@@ -327,6 +526,7 @@ const TOOLS = [
         chat_id: { type: 'string', description: 'The chat ID to send to (the `id` field from any Chat object).' },
         text: { type: 'string', description: 'The message body. Markdown supported.', minLength: 1 },
         reply_to_message_id: { type: 'string', description: 'Optional. Pass a message_id to send this as a reply to that specific message instead of as a new conversation entry.' },
+        client_tag: { type: 'string', description: 'Optional idempotency/echo tag. Recorded against this send and echoed back on the message as `client_tag` when it reappears in poll_messages / read_chat (where it is also marked source:"api"), so an agent can recognize and skip its own programmatic sends.' },
       },
       required: ['chat_id', 'text'],
       additionalProperties: false,
@@ -353,6 +553,19 @@ const TOOLS = [
       type: 'object',
       properties: {
         limit: { type: 'integer', description: 'Max chats to return (default 20)', default: 20, minimum: 1, maximum: 100 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'poll_messages',
+    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: { type: 'string', description: 'Opaque cursor from a previous poll_messages response. Omit on the first call to seed from now. Pass back verbatim — never construct or parse it.' },
+        chat_id: { type: 'string', description: 'Optional. Restrict the feed to one chat (the `id` from any Chat object). Omit to watch all recent chats.' },
+        limit: { type: 'integer', description: 'Max messages to return this call (default 50). If more are pending, has_more is true and they come on the next poll.', default: 50, minimum: 1, maximum: 100 },
       },
       additionalProperties: false,
     },
@@ -398,7 +611,8 @@ async function callTool(name, args) {
       const list = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
       // Beeper returns newest first; reverse so oldest comes first within the page
       // (more natural for an LLM building a conversation thread).
-      return list.slice(0, limit).map((m) => normalizeMessage(m, chat)).reverse();
+      const msgs = list.slice(0, limit).map((m) => normalizeMessage(m, chat)).reverse();
+      return applyEchoTags(msgs, Date.now());
     }
 
     case 'archive_chat': {
@@ -440,10 +654,11 @@ async function callTool(name, args) {
       for (const [id, c] of Object.entries(chatsMap)) {
         normalizedChats[id] = normalizeChat(c, accounts);
       }
-      return items.slice(0, limit).map((m) => {
+      const msgs = items.slice(0, limit).map((m) => {
         const chat = normalizedChats[m.chatID] || { network: 'unknown', network_label: 'Unknown' };
         return normalizeMessage(m, chat);
       });
+      return applyEchoTags(msgs, Date.now());
     }
 
     case 'note_to_self': {
@@ -453,9 +668,14 @@ async function callTool(name, args) {
         `/v1/chats/${encodeURIComponent(chatID)}/messages`,
         { method: 'POST', body: { text: args.text } },
       );
+      const messageID = String(sent?.pendingMessageID || '');
+      // Echo-guard: record so poll_messages / read_chat can tag this
+      // self-note source:'api' and the agent won't re-process its own note.
+      recordSent({ chat_id: chatID, sent_id: messageID, text: args.text, client_tag: args.client_tag });
       return {
         chat_id: chatID,
-        message_id: String(sent?.pendingMessageID || ''),
+        message_id: messageID,
+        client_tag: args.client_tag || null,
         status: 'sent',
       };
     }
@@ -469,9 +689,15 @@ async function callTool(name, args) {
         `/v1/chats/${encodeURIComponent(args.chat_id)}/messages`,
         { method: 'POST', body },
       );
+      const chatID = sent?.chatID || args.chat_id;
+      const messageID = String(sent?.pendingMessageID || '');
+      // Echo-guard: record so a poll_messages loop can skip the bot's own
+      // reply (source:'api') instead of treating it as a new inbound message.
+      recordSent({ chat_id: chatID, sent_id: messageID, text: args.text, client_tag: args.client_tag });
       return {
-        chat_id: sent?.chatID || args.chat_id,
-        message_id: String(sent?.pendingMessageID || ''),
+        chat_id: chatID,
+        message_id: messageID,
+        client_tag: args.client_tag || null,
         status: 'sent',
       };
     }
@@ -500,6 +726,61 @@ async function callTool(name, args) {
         .map((c) => normalizeChat(c, accounts))
         .filter((c) => !c.is_note_to_self && c.unread_count > 0)
         .slice(0, limit);
+    }
+
+    case 'poll_messages': {
+      const cur = decodeCursor(args.cursor); // null ⇒ seed mode
+      const page = Math.min(Math.max(args.limit || 50, 1), 100);
+      const accounts = await getAccountMap();
+
+      // Resolve which chats to scan: one if chat_id given, else the inbox.
+      let chats;
+      if (args.chat_id) {
+        const raw = await beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`);
+        chats = [normalizeChat(raw, accounts)];
+      } else {
+        const raw = await beeperFetch('/v1/chats?limit=100');
+        const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
+        chats = list.map((c) => normalizeChat(c, accounts));
+      }
+
+      // Seed (no cursor): return the current high-water mark and NO backlog,
+      // so the caller "starts watching from now". This is the half of the
+      // bug-class that integrators get wrong — there's now one right answer.
+      if (!cur) {
+        let maxTs = '';
+        for (const c of chats) {
+          if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
+        }
+        return { cursor: encodeCursor({ ts: maxTs, ids: [] }), messages: [], has_more: false, seeded: true };
+      }
+
+      // Only chats whose last activity is at/after the cursor can hold new
+      // messages — skip the rest so the per-chat fan-out stays bounded.
+      const candidates = args.chat_id
+        ? chats
+        : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
+
+      // Fetch the Beeper max (100) per chat, NOT `page`: the fetch window must
+      // exceed the delivery page so that a chat with more than `page` new
+      // messages is delivered across successive polls via the cursor, rather
+      // than the cursor jumping to the newest and stranding the older ones.
+      // (Residual: a single chat receiving >100 messages between two polls can
+      // still lose the oldest of that burst — Beeper's messages endpoint only
+      // returns the newest N with no backward paging. Documented in the GUIDE.)
+      const fetchLimit = 100;
+      const fresh = [];
+      for (const c of candidates) {
+        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
+        const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+        for (const m of mlist.map((x) => normalizeMessage(x, c))) {
+          if (isAfterCursor(m, cur)) fresh.push(m);
+        }
+      }
+
+      const { delivered, next, hasMore } = selectDelivery(fresh, cur, page);
+      const tagged = applyEchoTags(delivered, Date.now());
+      return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
     }
     default:
       throw rpcError(-32601, `unknown tool: ${name}`);
@@ -668,8 +949,30 @@ function startStdioTransport() {
 
 // ─── pick transport ───────────────────────────────────────────────
 
-if (process.argv.includes('--stdio')) {
-  startStdioTransport();
-} else {
-  startHttpTransport();
+// Only boot a transport when run as the entrypoint (`node server.js` /
+// `--stdio`). When require()'d — by the unit tests — skip the listeners and
+// just expose the pure helpers below.
+if (require.main === module) {
+  if (process.argv.includes('--stdio')) {
+    startStdioTransport();
+  } else {
+    startHttpTransport();
+  }
 }
+
+// Test surface — only the pure logic the unit suite exercises (the
+// seed/poll/dedup bug-class core + the echo-guard matcher). The HTTP/stdio
+// handlers and normalizers are covered black-box by the guard/smoke scripts.
+module.exports = {
+  encodeCursor,
+  decodeCursor,
+  isAfterCursor,
+  advanceCursor,
+  selectDelivery,
+  textHash,
+  matchSentMessage,
+  recordSent,
+  loadLedger,
+  // test hook: drop the in-memory ledger so a test can re-load from a fresh path
+  _resetLedger: () => { ledger = null; ledgerPersistWarned = false; },
+};

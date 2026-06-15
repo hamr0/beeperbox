@@ -40,7 +40,8 @@ U=http://127.0.0.1:23375
 names=$(curl -s -X POST "$U" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq -r '.result.tools[].name')
 for t in list_accounts list_inbox list_unread get_chat read_chat \
-         search_messages send_message note_to_self react_to_message archive_chat; do
+         search_messages send_message note_to_self react_to_message archive_chat \
+         poll_messages; do
   if echo "$names" | grep -qx "$t"; then echo "PASS: tool $t present"; else echo "FAIL: tool $t missing"; fail=1; fi
 done
 

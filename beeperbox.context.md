@@ -10,7 +10,7 @@
 beeperbox is a headless [Beeper Desktop](https://www.beeper.com/) in a Docker container that exposes **two things to agents**:
 
 1. **Raw Beeper Desktop HTTP API** on `127.0.0.1:23373` — the unmodified `/v1/*` endpoints for callers who want full control.
-2. **Opinionated Model Context Protocol server** on `127.0.0.1:23375` (HTTP) or stdio — 10 semantic tools, normalized `Chat` / `Message` schemas, note-to-self isolation, clean network slugs. Consume from Claude Code, Cursor, Cline, Continue, bareagent, or any other MCP-speaking runtime.
+2. **Opinionated Model Context Protocol server** on `127.0.0.1:23375` (HTTP) or stdio — 11 semantic tools, normalized `Chat` / `Message` schemas, note-to-self isolation, clean network slugs. Consume from Claude Code, Cursor, Cline, Continue, bareagent, or any other MCP-speaking runtime.
 
 Agents that consume beeperbox get read/write access to **every bridge the user's Beeper account has connected**: WhatsApp, iMessage, Signal, Discord, Slack, Telegram, Facebook Messenger, Instagram, LinkedIn, Google Messages, Matrix, and any future Beeper bridge. One config, every messenger.
 
@@ -34,6 +34,7 @@ docker run -d \
 | See which platforms are connected (WhatsApp, Telegram, ...) | `list_accounts` |
 | See the most recently active chats | `list_inbox` |
 | Find chats with unread messages | `list_unread` |
+| Poll for new messages since I last looked (watch loop) | `poll_messages` |
 | Read recent messages in one chat | `read_chat` |
 | Fetch one chat's metadata (unread count, title, etc.) | `get_chat` |
 | Send a reply or notification to a chat | `send_message` |
@@ -161,20 +162,54 @@ Full-text search across all messages in all chats. Hits include `chat_id` + `net
 **Returns:** array of `Message`.
 **Caveat:** Beeper Desktop only live-syncs the top ~20 most active chats. Older chats may not be searchable until they're pinned or scrolled into view.
 
+### `poll_messages`
+
+The **watch primitive** — a passive "what's new since I last looked?" feed for a poll loop. Returns every message that arrived after an opaque `cursor`, across all recent chats (or one chat if `chat_id` is given). **Read-only: it never marks anything read, never archives, never mutates** — call it as often as you like with zero side effects.
+
+**Arguments:** `{cursor?: string, chat_id?: string, limit?: integer(1..100) = 50}`.
+**Returns:** `{cursor: string, messages: Message[], has_more: boolean, seeded?: true}`.
+
+How the loop works:
+
+1. **Seed.** First call, omit `cursor`. You get back `{cursor, messages: [], seeded: true}` — an empty backlog and a starting cursor meaning *"from now"*. (The single most-recent existing message may surface once on the next poll — a documented seed-boundary effect, never a miss.)
+2. **Poll.** Pass the cursor back. You receive only messages newer than it, oldest-first, plus a fresh cursor. Persist the new cursor.
+3. **Repeat.** Sleep your chosen interval (the *policy* is yours — beeperbox only provides the *ability*), then poll again with the latest cursor.
+
+```javascript
+let cursor = (await mcp.callTool('poll_messages', {})).cursor;   // seed: from now
+while (true) {
+  const { cursor: next, messages, has_more } = await mcp.callTool('poll_messages', { cursor });
+  cursor = next;                          // persist this to disk — it's restart-safe
+  for (const m of messages) {
+    if (m.source === 'api') continue;     // skip our own programmatic sends (echo-guard)
+    await handle(m);                       // m.sender.is_self may be true: the owner's own Note-to-self command
+  }
+  if (!has_more) await sleep(POLL_INTERVAL_MS);  // has_more ⇒ poll again immediately, more is pending
+}
+```
+
+**Restart-resumable.** The cursor is opaque and fully stateless server-side — save it to disk and resume across a process or container restart with no missed or duplicated messages. Same-millisecond messages are deduplicated by id, so the classic seed/poll/dedup off-by-ones don't apply.
+
+**Includes your own messages on purpose.** `sender.is_self` may be `true` — the owner messaging themselves in Note to self is a real inbound signal (often the command channel for an assistant). **To stop an agent from answering its own sends, branch on `source`, not `is_self`** (see the Message schema below): `source: "api"` means *this* beeperbox sent it via `send_message`/`note_to_self` — skip it; `source: "external"` is everything else, the human owner's own messages included.
+
+**Bounds (same as the rest of the API):** the inbox scan only sees Beeper's live-synced ~20 most-active chats (pin or `search_messages` for the long tail). `has_more: true` means there are *immediately fetchable* messages beyond this page — keep polling (the cursor advances) until it's `false`, then sleep. **Residual:** beeperbox fetches up to the newest 100 messages per chat per poll; if a single chat receives **more than 100** messages between two of your polls, the oldest of that burst can be missed (Beeper's messages endpoint returns only the newest N with no backward paging). Poll often enough that no chat exceeds ~100 between polls, or backfill that chat with `read_chat` / `search_messages`.
+
 ### `send_message`
 
 Send a text message to a chat. Markdown supported.
 
-**Arguments:** `{chat_id: string, text: string, reply_to_message_id?: string}`.
-**Returns:** `{chat_id, message_id, status: "sent"}`.
+**Arguments:** `{chat_id: string, text: string, reply_to_message_id?: string, client_tag?: string}`.
+**Returns:** `{chat_id, message_id, client_tag, status: "sent"}`.
 **Note:** `message_id` is Beeper's `pendingMessageID` — use it for downstream `react_to_message` on the just-sent message.
+**`client_tag` (echo-guard):** optional idempotency/echo key. beeperbox records it against this send and echoes it back on the message — marked `source: "api"` — when it reappears in `poll_messages` / `read_chat`. Lets an agent recognize and skip its own programmatic sends without a brittle text-prefix hack (see `poll_messages` and the Message schema).
 
 ### `note_to_self`
 
 Send a message to the bot's own Beeper-native Note to self chat. Auto-resolves the correct chat ID, so no `chat_id` parameter needed.
 
-**Arguments:** `{text: string}`.
-**Returns:** `{chat_id, message_id, status: "sent"}`.
+**Arguments:** `{text: string, client_tag?: string}`.
+**Returns:** `{chat_id, message_id, client_tag, status: "sent"}`.
+**`client_tag`:** same echo-guard semantics as `send_message` — recorded and echoed back as `source: "api"` on read-back, so a `poll_messages` loop can skip the agent's own self-notes.
 **Use for:** agent self-notes ("processed 5 customer messages"), debug output, scheduled reminders, anything you want recorded but NOT seen by anyone else. The note-to-self chat is excluded from `list_inbox` / `list_unread` / `search_messages`, so messages here will not pollute customer views.
 
 **Routing:** the resolver requires the target chat to live on the Beeper-native matrix account, so self-notes will not accidentally land in a third-party network's saved-messages chat (e.g. Telegram Saved Messages). Falls back to any single-self chat only if no matrix one exists, and writes a warning to stderr when it does — check the container logs (`docker logs beeperbox`) if you suspect routing is going to the wrong chat.
@@ -241,7 +276,9 @@ Two normalized shapes. Learn them once and every tool returns the same thing.
   "text": "are we still meeting tomorrow?",
   "type": "TEXT",
   "timestamp": "2026-04-13T09:30:00Z",
-  "reply_to": null
+  "reply_to": null,
+  "source": "external",
+  "client_tag": null
 }
 ```
 
@@ -250,10 +287,46 @@ Two normalized shapes. Learn them once and every tool returns the same thing.
 | `id` | Message ID. Needed for `react_to_message`. |
 | `chat_id` | Parent chat ID. **Always present on every Message**, even in `search_messages` hits — no second lookup to ground. |
 | `network` / `network_label` | Same as `Chat`. Propagated so the LLM can branch per-platform without re-fetching the chat. |
-| `sender.is_self` | True if the Beeper account sent this message. Use to distinguish "my replies" from "their replies" in a thread. |
+| `sender.is_self` | True if the **Beeper account** sent this message — **from any client**, including the human owner typing on their phone. Distinguishes "from my account" from "from someone else". **Not an echo-guard** (see `source`). |
 | `text` | Message body. For non-text messages (media, voice, etc.) this is `"[MEDIA]"` or `"[<type>]"`. |
 | `type` | `"TEXT"`, `"MEDIA"`, etc. |
 | `reply_to` | Parent message ID if this is a reply, else `null`. |
+| `source` | **`"api"`** if *this* beeperbox sent the message via `send_message` / `note_to_self`; **`"external"`** otherwise. This — not `is_self` — is the echo-guard: on one account both the owner's own typed messages and the agent's API replies are `is_self: true`, so only `source` can tell "I sent this programmatically" from "the human owner sent this". Skip `source === "api"` in a poll loop; process `"external"` (the owner's own Note-to-self commands included). |
+| `client_tag` | The `client_tag` passed to `send_message` / `note_to_self` for this message, echoed back, else `null`. An idempotency key the agent can correlate to a specific send. |
+
+> **`source` matching is best-effort and unverified against a live Beeper account** (CI has none). The primary match is the `pendingMessageID` returned by the send; because Beeper may swap that for a real bridge id on ack, a content-based fallback also matches, but only for the account's own (`is_self`) messages in the same chat within a 15-minute window — deliberately conservative so a human re-typing identical text is never mis-tagged and dropped. The ledger is persisted to the config volume so the guard survives restarts. Validate against your own account before relying on it for a high-stakes auto-responder, and keep a secondary guard if a missed echo would be costly.
+
+## Raw `/v1/` contract (for direct-API consumers)
+
+The MCP tools are the supported surface, but you can hit Beeper's raw `/v1/*` API on `:23373` directly (see the curl/Node/Python snippets in [docs/GUIDE.md](docs/GUIDE.md)). If you do, you are responsible for the same quirks the MCP layer absorbs for you. These are the canonical rules — match them and a raw consumer behaves identically to the MCP tools.
+
+### Pagination floor — `?limit=N` is a *lower* bound, not an upper one
+
+`GET /v1/chats?limit=N` and `GET /v1/chats/{chatID}/messages?limit=N` return **~25 items minimum regardless of `N`**. Asking for `limit=3` still returns ~25. The MCP layer over-fetches `max(N, 25)` then **slices to `N` client-side**; a raw consumer that trusts the count will over-read. Always slice yourself after the fetch.
+
+### Enumerating new messages — the cursor pattern (what `poll_messages` does)
+
+There is **no server-side cursor or `since=` param** on the raw API; it is request/response only. `poll_messages` synthesizes a cursor client-side, and a raw consumer can reproduce it exactly:
+
+1. **Discover changed chats.** `GET /v1/chats?limit=100`, read each chat's `lastActivity` (ISO 8601). Only chats whose `lastActivity` is `>=` your last high-water timestamp can hold new messages — skip the rest.
+2. **Page each candidate.** `GET /v1/chats/{chatID}/messages?limit=50` (newest-first). Keep messages whose `timestamp` is **strictly after** your cursor.
+3. **Dedup same-millisecond ties by id.** Track the message ids seen *at* your high-water timestamp; a message is new iff `timestamp > cursorTs` **or** (`timestamp === cursorTs` **and** its id wasn't already seen). This is the off-by-one that bites hand-rolled pollers — without the id set, two messages in the same millisecond will drop one or replay one.
+4. **Advance the cursor** to the newest `(timestamp, ids@timestamp)` you delivered. Persist it; it's restart-safe.
+
+This is bounded by Beeper's ~20-chat live sync (step 1 only sees live-synced chats) — the same bound the MCP tools have. **Prefer the `poll_messages` MCP tool**; this is only the recipe if you're consuming raw `/v1/` and can't use MCP.
+
+### Canonical field heuristics (raw shapes → normalized meaning)
+
+The MCP normalizers (`Chat` / `Message`) apply these; a raw consumer must apply them too to agree:
+
+| Concept | Raw rule |
+|---|---|
+| **Network** | NOT in the room id. Resolve `chat.accountID` against `GET /v1/accounts` → `account.network` (human label), then slug it. Cache the accounts map — it's stable per session. |
+| **Note-to-self** | `chat.participants.total === 1 && chat.participants.items[0].isSelf === true`. Catches both Beeper-native Note to self **and** each platform's saved-messages chat (Telegram "Saved Messages", WhatsApp "Send to yourself"). `list_inbox` / `list_unread` filter these out. |
+| **Group** | `chat.type === 'group'` (and not note-to-self) — there is no `isGroup` field. |
+| **Last activity** | `chat.lastActivity` (camelCase ISO 8601), not `last_activity`. |
+| **Message sender-is-self** | `message.isSender === true`. True for **anything the account sent from any client** — this is *not* an "I sent it via the API" signal (the MCP layer adds `source` for that, which the raw API has no equivalent of — it's a beeperbox-side ledger). |
+| **Sent message id** | `POST .../messages` returns `pendingMessageID`, a local pending id that the bridge **replaces with a real id on ack**. Don't treat it as a stable delivered id; poll the chat to see the real one. |
 
 ## Network slugs
 
@@ -305,8 +378,8 @@ Beeper's token creation UI has an **"Allow sensitive actions"** toggle that gate
 
 | Token scope | Allowed tools | Denied tools |
 |---|---|---|
-| **Read + write** (Allow sensitive actions: **on**) | all 10 | none |
-| **Read only** (Allow sensitive actions: **off**) | `list_accounts`, `list_inbox`, `list_unread`, `get_chat`, `read_chat`, `search_messages` | `send_message`, `note_to_self`, `react_to_message`, `archive_chat` (all return `-32001` / `401 Unauthorized`) |
+| **Read + write** (Allow sensitive actions: **on**) | all 11 | none |
+| **Read only** (Allow sensitive actions: **off**) | `list_accounts`, `list_inbox`, `list_unread`, `poll_messages`, `get_chat`, `read_chat`, `search_messages` | `send_message`, `note_to_self`, `react_to_message`, `archive_chat` (all return `-32001` / `401 Unauthorized`) |
 
 Use this for least-privilege agents: give a monitoring or summarization agent a read-only token so a prompt-injection attack cannot make it send messages.
 
@@ -419,6 +492,30 @@ const answer = await llm.answer('What was the agreed Q3 invoice amount?', summar
 ```
 
 No N+1 chat fetches — search returns the chat metadata inline.
+
+### Pattern 6: passive watch loop (react to new messages)
+
+```javascript
+// Persist `cursor` to disk (e.g. a file or KV) so a restart resumes cleanly.
+let cursor = loadCursor() || (await mcp.callTool('poll_messages', {})).cursor; // seed once
+
+while (running) {
+  const { cursor: next, messages, has_more } = await mcp.callTool('poll_messages', { cursor });
+  cursor = next;
+  saveCursor(cursor);
+
+  for (const m of messages) {
+    if (m.source === 'api') continue;             // skip our own programmatic sends — NOT is_self
+    // m.sender.is_self may be true: the owner's own Note-to-self command is a real signal
+    const reply = await llm.handle(m);
+    if (reply) await mcp.callTool('send_message', { chat_id: m.chat_id, text: reply, client_tag: m.id });
+  }
+
+  if (!has_more) await sleep(POLL_INTERVAL_MS);    // has_more ⇒ keep polling, don't sleep yet
+}
+```
+
+This replaces the hand-rolled "diff `list_inbox` against last-seen, dedup, track what I've replied to" loop with one cursor the server keeps honest. The poll interval is your call — beeperbox supplies the watch *ability*, not the cadence *policy*. Passing the inbound message id as `client_tag` on the reply makes the reply self-identifying in the next poll (it comes back `source: "api"`, so the guard skips it even if the content-match heuristic misses).
 
 ## Transport summary
 

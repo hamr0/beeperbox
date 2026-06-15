@@ -29,7 +29,7 @@ A single Docker container that bundles, in one image:
 1. **Headless Beeper Desktop** — the real Electron app, run under a virtual display (Xvfb + openbox), no GPU, no human.
 2. **A first-run login surface** — a noVNC web UI (`:6080`) used exactly once, to sign into Beeper and mint an API token. Not part of the steady-state runtime path.
 3. **The raw Beeper Desktop HTTP API** (`:23373`), made reachable from outside the container's loopback-only Electron binding via a `socat` forwarder.
-4. **An opinionated MCP server** (`:23375`) — vanilla Node, zero npm dependencies, a single `mcp/server.js` — wrapping the raw API in **10 semantic tools** and **2 normalized schemas** so an LLM never touches raw Beeper endpoints.
+4. **An opinionated MCP server** (`:23375`) — vanilla Node, zero npm dependencies, a single `mcp/server.js` — wrapping the raw API in **11 semantic tools** and **2 normalized schemas** so an LLM never touches raw Beeper endpoints.
 
 State (login, bridge sync, token) lives in a named Docker volume, so the login survives restarts, rebuilds, and host reboots. The image is published pre-built and multi-arch; the common path is *pull and run*, not clone-and-build.
 
@@ -88,7 +88,7 @@ Xvfb (virtual display)
 |---|---|---|---|
 | `6080` | noVNC web UI — **first-run login only** | `127.0.0.1` | `BEEPERBOX_NOVNC_PORT` |
 | `23373` | Raw Beeper Desktop HTTP API (via socat `:23380`) | `127.0.0.1` | `BEEPERBOX_HOST_PORT` |
-| `23375` | Opinionated 10-tool MCP server (HTTP transport) | `127.0.0.1` | `BEEPERBOX_MCP_PORT` |
+| `23375` | Opinionated 11-tool MCP server (HTTP transport) | `127.0.0.1` | `BEEPERBOX_MCP_PORT` |
 
 All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in (SSH tunnel, Tailscale/Wireguard, or a TLS-terminating reverse proxy with auth) — never by dropping the loopback prefix. The container name is also env-overridable (`BEEPERBOX_CONTAINER_NAME`) so multiple instances can coexist on one host.
 
@@ -103,6 +103,7 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | `MCP_AUTH_TOKEN` | unset | When set, every MCP HTTP request must carry `Authorization: Bearer <token>` or get `401`. |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1,[::1]` | Host/Origin allowlist (DNS-rebinding defense); set when a reverse proxy fronts a custom hostname. |
 | `MCP_MAX_BODY` | 1 MiB | Request body cap on the MCP HTTP transport; over-cap ⇒ `413`. |
+| `BEEPERBOX_SENT_LEDGER` | `/root/.config/beeperbox-sent-ledger.json` | Path to the echo-guard sent-message ledger (inside the persisted config volume). Best-effort; a failed write degrades the `source` guard to in-memory for that run, never fails a send. |
 | `VNC_PASSWORD` | unset | When set, the noVNC/x11vnc session requires a password (RFB security type *VNC auth*). |
 | `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; unset ⇒ rolling auto-update. |
 
@@ -121,17 +122,18 @@ A single-file, zero-dependency Node server wrapping the raw API. Two interchange
 - **HTTP** (default, always on): JSON-RPC 2.0 over POST on `:23375`. For remote agents, cross-container setups, cloud runtimes.
 - **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout (stdout reserved for protocol, logs to stderr), via `docker exec -i beeperbox node /opt/mcp/server.js --stdio` (here `beeperbox` is the default container name — use your `BEEPERBOX_CONTAINER_NAME` if you overrode it for a multi-instance host). For local MCP clients (Claude Code, Cursor, Cline, Continue, bareagent).
 
-**The 10 tools:**
+**The 11 tools:**
 
 | Tool | What it does | Access |
 |---|---|---|
 | `list_accounts` | Which networks are connected (`network` slug + `network_label`) | read |
 | `list_inbox` | Top recently active chats; note-to-self filtered out | read |
 | `list_unread` | Like `list_inbox`, only chats with `unread_count > 0` | read |
+| `poll_messages` | Passive cursor-based "what's new since I last looked?" feed (the watch primitive); read-only, restart-resumable, echo-guarded | read |
 | `get_chat` | One chat by ID (`Chat` schema) | read |
 | `read_chat` | Last N messages from a chat, oldest-first in page, each grounded with `chat_id`/`network` | read |
 | `search_messages` | Full-text across all chats; hits resolve network metadata in one round-trip | read |
-| `send_message` | Send text to a chat, optional `reply_to_message_id`; returns `pendingMessageID` | write |
+| `send_message` | Send text to a chat, optional `reply_to_message_id` + `client_tag`; returns `pendingMessageID` | write |
 | `note_to_self` | Send to the agent's own note-to-self chat (auto-resolved, Beeper-native matrix), the dedicated command/control channel — excluded from inbox views | write |
 | `react_to_message` | Add an emoji reaction (unicode, shortcode, or custom key) | write |
 | `archive_chat` | Archive/unarchive (stands in for mark-as-read, which Beeper exposes no endpoint for) | write |
@@ -140,10 +142,14 @@ A single-file, zero-dependency Node server wrapping the raw API. Two interchange
 
 ```
 Chat:    { id, title, network, network_label, is_group, is_note_to_self, last_message_at, unread_count }
-Message: { id, chat_id, network, network_label, sender{id,name,is_self}, text, type, timestamp, reply_to }
+Message: { id, chat_id, network, network_label, sender{id,name,is_self}, text, type, timestamp, reply_to, source, client_tag }
 ```
 
 Every chat and message carries both `network` (machine slug: `whatsapp`, `telegram`, …) and `network_label` (human: `"WhatsApp"`, …), normalized off `/v1/accounts` with chat-bridge-ID parsing as fallback. The **note-to-self vs inbox split** is a core design invariant: the agent's command channel must never pollute customer conversations, and customer inbox views must never surface the agent's own notes.
+
+**`poll_messages` — the watch primitive.** A passive, cursor-based new-messages-since feed so integrators stop reinventing the seed/poll/dedup loop against the raw API. Read-only (never marks read / archives / mutates); first call seeds "from now", subsequent calls return only messages newer than an opaque cursor the caller persists (restart-resumable, with same-millisecond id dedup). This is *ability, not policy* — beeperbox provides the mechanism; poll interval and "handled" state stay with the caller. It does **not** make beeperbox a streaming system (§3) — it's a better-shaped poll, not a push subscription.
+
+**`source` echo-guard.** On one Beeper account, both the owner's own typed messages and the agent's API replies are `sender.is_self === true`, so `is_self` can't stop an agent from answering its own sends. Every `Message` therefore carries `source` (`"api"` if *this* beeperbox sent it via `send_message`/`note_to_self`, else `"external"`) plus an echoed `client_tag`. The send tools record what they send to a ledger persisted in the config volume (`BEEPERBOX_SENT_LEDGER`); read-back tags the match. Match is best-effort and **unverified against a live account** (the standing CI-gate limitation); documented conservatively so a human re-typing identical text is never mis-tagged.
 
 ### 6.3 Operational properties
 
@@ -235,7 +241,11 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 ## 11. Roadmap / open items
 
-Nothing is committed; beeperbox is feature-driven by real usage. Candidates discussed, not built:
+Nothing is committed; beeperbox is feature-driven by real usage. Delivered from this list once a real user asked:
+
+- **`poll_messages` watch primitive + `source` echo-guard** *(unreleased — see CHANGELOG)* — the first consumer-driven feature. [multis](https://github.com/hamr0/multis) was hand-rolling seed/poll/dedup against the raw API; beeperbox now exposes the cursor-based new-messages primitive and a send-origin marker natively. Boundary-correct: it adds the *ability* to watch, not a *policy* about when to poll, and it does not make beeperbox a streaming system (§3) — it's a better-shaped poll.
+
+Candidates discussed, not built:
 
 - **Renovate/Dependabot** to bump the pinned Beeper digest via tested PRs.
 - **Louder failure alerts** (e.g. Slack) beyond the default GitHub Actions email on a failed release gate.
