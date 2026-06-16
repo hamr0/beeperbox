@@ -8,10 +8,31 @@
 const http = require('http');
 const crypto = require('crypto');
 const path = require('path');
+const os = require('os');
+
+// Single source of truth for the version: the sibling package.json — so the
+// lite-mode npm package, the container (which COPYs this dir to /opt/mcp), and
+// serverInfo can never report different versions. Falls back only if the
+// manifest is somehow absent (e.g. server.js copied alone).
+const VERSION = (() => {
+  try { return require('./package.json').version; } catch { return '0.0.0-dev'; }
+})();
 
 const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
 const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
 const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
+
+// Bind address. Defaults to LOOPBACK (127.0.0.1) — the safe default for lite
+// mode (`npx beeperbox` on a laptop), where the process listens directly on the
+// host with no Docker loopback publish in front of it. Binding 0.0.0.0 there
+// would put the full tool surface (read every message, send across every
+// network) on the LAN, reachable unauthenticated by anyone who can spoof the
+// `Host` header — a non-browser attacker trivially can. The container needs
+// 0.0.0.0 (a Docker published port can't reach a loopback-bound process) and
+// sets MCP_BIND_ADDR=0.0.0.0 via the image ENV; there the loopback *publish*
+// (`127.0.0.1:23375:23375`), not the bind, is the boundary. To expose lite mode
+// deliberately, set MCP_BIND_ADDR=0.0.0.0 AND MCP_AUTH_TOKEN AND a tunnel.
+const BIND_ADDR = process.env.MCP_BIND_ADDR || '127.0.0.1';
 
 // ─── http transport hardening ─────────────────────────────────────
 // The HTTP transport is the network-exposed surface (stdio is local-only).
@@ -25,10 +46,11 @@ const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 //                       Defaults to loopback; set it for reverse proxies.
 //   MCP_MAX_BODY      — max request body bytes (default 1 MiB) so a large
 //                       POST can't grow the in-memory buffer unbounded.
-// The listener stays bound to 0.0.0.0 ON PURPOSE: a Docker published port
-// is unreachable if the in-container process binds 127.0.0.1, so loopback
-// binding here would break `127.0.0.1:23375:23375`. Auth + Host/Origin
-// checks are the defense, not the bind address.
+// The bind address is MCP_BIND_ADDR (see above): loopback by default (safe for
+// lite mode), 0.0.0.0 in the container (where the loopback PUBLISH is the
+// boundary). In the container, Auth + Host/Origin are the in-container defense;
+// in lite mode the loopback BIND is, because a non-browser client can spoof the
+// Host header past the allowlist.
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || '';
 const MCP_ALLOWED_HOSTS = new Set(
   (process.env.MCP_ALLOWED_HOSTS || 'localhost,127.0.0.1,::1,[::1]')
@@ -67,6 +89,11 @@ const MAX_ASSET_BYTES = envIntNonNeg('BEEPERBOX_MAX_ASSET_BYTES', 8 * 1024 * 102
 // Per-call timeout on the asset-serve fetch so a hung or slow-drip source can't
 // stall the request forever and the buffer can't grow unbounded behind it.
 const ASSET_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_ASSET_TIMEOUT_MS', 30000);
+// Startup preflight: one bounded probe of the Beeper API on boot so a bad
+// BEEPER_API / token is obvious in the logs immediately, not at first tool call.
+// Container has a Docker HEALTHCHECK + supervises beepertexts; lite mode has
+// neither, so this is its boot sanity check. Opt out with BEEPERBOX_PREFLIGHT=0.
+const PREFLIGHT_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_PREFLIGHT_TIMEOUT_MS', 5000);
 
 // Real attachment src_urls come in two shapes: remote Matrix content
 // (mxc:// / localmxc://) and, once Beeper caches the file locally,
@@ -154,7 +181,7 @@ function httpGuard(req) {
 // ─── beeper api helper ────────────────────────────────────────────
 
 async function beeperFetch(path, opts = {}) {
-  if (!BEEPER_TOKEN) throw rpcError(-32000, 'BEEPER_TOKEN env var not set — create a token in Beeper Settings > Developers and pass it to the container');
+  if (!BEEPER_TOKEN) throw rpcError(-32000, 'BEEPER_TOKEN env var not set — create a token in Beeper Settings > Developers and set the BEEPER_TOKEN environment variable');
   const init = {
     method: opts.method || 'GET',
     headers: { Authorization: `Bearer ${BEEPER_TOKEN}` },
@@ -484,8 +511,18 @@ const LEDGER_TEXT_WINDOW_MS = 15 * 60 * 1000;
 // (the tag is an idempotency key — 256 chars is far more than any real one).
 const CLIENT_TAG_MAX = 256;
 
+// Where the echo-guard ledger persists. BEEPERBOX_SENT_LEDGER overrides
+// explicitly; otherwise a per-user XDG path under the config home. This is one
+// code path for BOTH deployments — no container-detection — because os.homedir()
+// is /root in the container (so the file lands on the persisted /root/.config
+// volume) and the real user's home in lite mode (so a non-root host process can
+// actually write it). The old hardcoded /root/.config/... default silently
+// failed to persist on any normal host, degrading the echo-guard across
+// restarts; this is the fix.
 function ledgerPath() {
-  return process.env.BEEPERBOX_SENT_LEDGER || '/root/.config/beeperbox-sent-ledger.json';
+  if (process.env.BEEPERBOX_SENT_LEDGER) return process.env.BEEPERBOX_SENT_LEDGER;
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return path.join(configHome, 'beeperbox', 'sent-ledger.json');
 }
 
 let ledger = null; // lazily loaded array of { chat_id, sent_ids[], resolved, text_hash, client_tag, ts }
@@ -512,7 +549,12 @@ let ledgerPersistWarned = false;
 function persistLedger() {
   try {
     const fs = require('fs');
-    fs.writeFileSync(ledgerPath(), JSON.stringify(ledger.slice(-LEDGER_MAX)), { mode: 0o600 });
+    const p = ledgerPath();
+    // The per-user XDG dir (~/.config/beeperbox) won't exist on a fresh host —
+    // create it (recursive, ignores already-exists) so the very first send can
+    // persist instead of degrading the guard to in-memory.
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(ledger.slice(-LEDGER_MAX)), { mode: 0o600 });
   } catch (e) {
     // Swallow — a degraded echo-guard must never take down a send. Warn once.
     if (!ledgerPersistWarned) {
@@ -1076,7 +1118,7 @@ async function handleRequest(req) {
       case 'initialize':
         result = {
           protocolVersion: '2025-03-26',
-          serverInfo: { name: 'beeperbox', version: '0.7.0' },
+          serverInfo: { name: 'beeperbox', version: VERSION },
           capabilities: { tools: {} },
         };
         break;
@@ -1113,6 +1155,29 @@ async function handleRequest(req) {
       id: req.id ?? null,
       error: { code: err.rpcCode || -32603, message: err.message },
     };
+  }
+}
+
+// ─── startup preflight ────────────────────────────────────────────
+// Fire-and-forget boot probe. Calls /v1/accounts once (token-gated, so it
+// proves reachability AND that the token is accepted in a single hit) and logs
+// one clear verdict. Best-effort and non-fatal: a down API or unset token must
+// NOT stop the server from booting (the container's first run has no token /
+// no login yet, by design). Always logs to stderr — never the protocol channel
+// — so it's safe under both HTTP and stdio transports.
+async function preflight() {
+  if (process.env.BEEPERBOX_PREFLIGHT === '0') return;
+  const say = (m) => process.stderr.write(`[beeperbox-mcp] ${m}\n`);
+  if (!BEEPER_TOKEN) {
+    say('preflight: BEEPER_TOKEN not set — skipping reachability check (tool calls will fail until it is set)');
+    return;
+  }
+  try {
+    const accounts = await beeperFetch('/v1/accounts', { timeoutMs: PREFLIGHT_TIMEOUT_MS });
+    const list = Array.isArray(accounts) ? accounts : (accounts?.items || []);
+    say(`preflight OK: ${BEEPER_API} reachable, token accepted, ${list.length} account(s)`);
+  } catch (e) {
+    say(`preflight FAIL: ${BEEPER_API} unreachable or token rejected — ${e.message}`);
   }
 }
 
@@ -1165,12 +1230,13 @@ function startHttpTransport() {
     });
   });
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[beeperbox-mcp] listening on http://0.0.0.0:${PORT}`);
+  server.listen(PORT, BIND_ADDR, () => {
+    console.log(`[beeperbox-mcp] listening on http://${BIND_ADDR}:${PORT}${BIND_ADDR === '0.0.0.0' ? ' (all interfaces — rely on a loopback publish or set MCP_AUTH_TOKEN)' : ' (loopback only)'}`);
     console.log(`[beeperbox-mcp] beeper api: ${BEEPER_API}`);
     console.log(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET (set BEEPER_TOKEN env var)'}`);
     console.log(`[beeperbox-mcp] http auth: ${MCP_AUTH_TOKEN ? 'required (MCP_AUTH_TOKEN set)' : 'OPEN — set MCP_AUTH_TOKEN to require a bearer token'}`);
     console.log(`[beeperbox-mcp] allowed hosts: ${[...MCP_ALLOWED_HOSTS].join(', ')}`);
+    preflight();
   });
 }
 
@@ -1211,6 +1277,7 @@ function startStdioTransport() {
   process.stderr.write('[beeperbox-mcp] stdio transport ready\n');
   process.stderr.write(`[beeperbox-mcp] beeper api: ${BEEPER_API}\n`);
   process.stderr.write(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET'}\n`);
+  preflight();
 }
 
 // ─── pick transport ───────────────────────────────────────────────
@@ -1230,6 +1297,12 @@ if (require.main === module) {
 // seed/poll/dedup bug-class core + the echo-guard matcher). The HTTP/stdio
 // handlers and normalizers are covered black-box by the guard/smoke scripts.
 module.exports = {
+  // Parity surface — lite mode and the container run THIS file, so asserting the
+  // version + tool names here is what guarantees the two builds can't drift.
+  VERSION,
+  TOOL_NAMES: TOOLS.map((t) => t.name),
+  BIND_ADDR,
+  ledgerPath,
   encodeCursor,
   decodeCursor,
   isAfterCursor,

@@ -12,6 +12,32 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [0.8.0] — 2026-06-16 `[MINOR]`
+
+**Lite mode** — a first-class, supported way to run beeperbox's MCP verb server standalone against a Beeper Desktop the user already runs locally (no Docker, no Electron, no Xvfb). Driven by [multis](https://github.com/hamr0/multis), beeperbox's first consumer: laptop users with Beeper already open get the verbs without the whole container, while the container stays the answer for always-on/VPS. Same single `mcp/server.js` either way, so the tool surface and `serverInfo.version` are identical by construction — lite mode is the *packaging*, not a fork. MINOR per the versioning policy (new runtime behavior — a boot preflight + new distribution mode), and it carries one bug fix that also mattered to the container. Validated live: the full send → restart → poll round-trip echo-guard persistence was proven against a real Beeper account running on the host.
+
+### Added
+
+- **npm package `beeperbox`** (`mcp/package.json`, zero runtime deps). Exposes a `beeperbox` bin, so the supported lite-mode install is `BEEPER_TOKEN=… npx beeperbox` (HTTP transport) or `npx beeperbox --stdio` (stdio). The published tarball is just `server.js` + a focused npm README — the same file the container runs.
+- **Single-sourced version.** `serverInfo.version` now reads from the sibling `package.json` instead of a hardcoded string, so the npm package, the container (which `COPY`s `mcp/` into the image), and the MCP `initialize` response can never report three different versions. A unit test pins `serverInfo.version === package.json.version` and asserts the exact 12-verb tool set, so lite and container can't silently drift.
+- **Startup preflight** (new runtime behavior). On boot the server fires one bounded probe of `/v1/accounts` (token-gated, so it proves reachability *and* that the token is accepted in a single hit) and logs a clear verdict — `preflight OK: <api> reachable, token accepted, N account(s)` or `preflight FAIL: … unreachable or token rejected — <reason>`. The container has a Docker `HEALTHCHECK` + supervises beepertexts; lite mode had neither, so a misconfig used to surface only at the first tool call. Best-effort and non-fatal (an unset token or down API never blocks boot — the container's first run legitimately has neither), logged to stderr so it's safe under both transports. Opt out with `BEEPERBOX_PREFLIGHT=0`; bound with `BEEPERBOX_PREFLIGHT_TIMEOUT_MS` (default 5000). **The container image sets `BEEPERBOX_PREFLIGHT=0`** — preflight is the lite-mode boot check, and the container already has a Docker `HEALTHCHECK` + supervisor + an API-wait loop; since the entrypoint starts the MCP server before the API is ready, a one-shot preflight would otherwise log a misleading `FAIL` on every container boot.
+
+### Fixed
+
+- **Sent-ledger now persists on a normal host (echo-guard no longer silently degrades in lite mode).** `BEEPERBOX_SENT_LEDGER`'s default was the container-only `/root/.config/beeperbox-sent-ledger.json`; on a non-root host that write fails, so the `source:"api"` echo-guard's ledger couldn't persist and the guard degraded to in-memory across restarts. The default is now a per-user XDG path — `$XDG_CONFIG_HOME/beeperbox/sent-ledger.json`, falling back to `~/.config/beeperbox/sent-ledger.json` — and the parent dir is created on first write. **One code path for both deployments, no container-detection:** `os.homedir()` is `/root` in the container, so the file still lands on the persisted `/root/.config` volume (the path moves from `…/beeperbox-sent-ledger.json` to `…/beeperbox/sent-ledger.json`; the ledger is best-effort and self-rebuilds from sends, so the move is transparent on upgrade). `BEEPERBOX_SENT_LEDGER` still overrides. Verified live: send → kill process → restart → read-back, where the prior send still reads `source:"api"` with its `client_tag`, from the reloaded ledger.
+
+### Security
+
+- **Lite mode binds loopback by default (new `MCP_BIND_ADDR`, default `127.0.0.1`).** The MCP server bound `0.0.0.0` unconditionally. That is safe in the container — Docker publishes the port on `127.0.0.1`, and that loopback *publish* is the boundary — but **lite mode has no such layer**: `npx beeperbox` listened on every interface, so a same-network attacker could reach the full tool surface (read every message, send across every network) **unauthenticated**, bypassing the `Host`/`Origin` allowlist by spoofing the `Host` header (a non-browser client trivially can; demonstrated live against the LAN IP during the `/security` pass). The bind address is now `MCP_BIND_ADDR`, defaulting to loopback; the container image bakes in `MCP_BIND_ADDR=0.0.0.0` (so its published port keeps working — and the CI guard-check, which runs `node` directly, still binds all interfaces). To expose lite mode deliberately, set `MCP_BIND_ADDR=0.0.0.0` **and** `MCP_AUTH_TOKEN` and front it with a tunnel. Found and fixed by `/security` on this change.
+
+### Changed
+
+- **De-containerized the `BEEPER_TOKEN`-missing error.** The message said "pass it to the container"; it now says "set the `BEEPER_TOKEN` environment variable" — transport-agnostic, since lite mode has no container.
+
+### Documentation
+
+- **README — new "Lite mode" section**: container-vs-lite comparison, prereqs (local Beeper Desktop + Developer API + dev token), the one command, the full env contract, the loopback-by-default security posture (set `MCP_AUTH_TOKEN` + `MCP_ALLOWED_HOSTS` + a tunnel to expose), and the systemd/pm2 supervision note. A focused `mcp/README.md` renders on the npm package page.
+
 ## [0.7.0] — 2026-06-16 `[MINOR]`
 
 Cuts 0.7.0 (MINOR) so `:latest` carries attachment reach for multis's media flow (indexing files customers/the admin send — e.g. a PDF → FAQ). New `download_asset` MCP tool + `attachments[]` on every `Message`; validated end-to-end against a live Beeper account. Tag `v0.7.0` after merge triggers the gated publish (`:0.7.0`/`:0.7`/`:0`/`:latest`, old `:latest` → `:previous`).

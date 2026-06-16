@@ -3,7 +3,7 @@
 > **This is the grounding document for beeperbox: what it is, what it is *not*, and why.**
 > When a feature, a release, or a "wouldn't it be cool if…" idea is on the table, it gets measured against this doc. Anything that contradicts the "Non-goals" section is rejected by default unless this document is changed first.
 
-- **Status:** shipped and in use. Current release **v0.7.0** (2026-06-16); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
+- **Status:** shipped and in use. Current release **v0.8.0** (2026-06-16); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
 - **Distribution:** pre-built multi-arch image on GHCR — `ghcr.io/hamr0/beeperbox` (`linux/amd64` + `linux/arm64`).
 - **License:** [Apache-2.0](../LICENSE). Independent wrapper around Beeper Desktop; **no affiliation** with Beeper / Automattic.
 - **Related deep-dive docs:** [`GUIDE.md`](GUIDE.md) (human operator walkthrough), [`../beeperbox.context.md`](../beeperbox.context.md) (AI-assistant integration guide).
@@ -33,6 +33,8 @@ A single Docker container that bundles, in one image:
 
 State (login, bridge sync, token) lives in a named Docker volume, so the login survives restarts, rebuilds, and host reboots. The image is published pre-built and multi-arch; the common path is *pull and run*, not clone-and-build.
 
+**Two modes, one verb layer.** The above is the **container** (the default, for always-on / headless / VPS). The same `mcp/server.js` also runs as **lite mode** — published to npm as `beeperbox` (`npx beeperbox`), it serves *only* the MCP verb layer against a Beeper Desktop the user already runs locally (no Docker, no Electron, no Xvfb). Identical tool surface and `serverInfo.version` by construction — lite mode is the *packaging*, not a fork. Use the container when there's no human/desktop in the loop; use lite mode when Beeper is already open on the machine. See §8.
+
 ---
 
 ## 3. What beeperbox is NOT (non-goals)
@@ -40,10 +42,10 @@ State (login, bridge sync, token) lives in a named Docker volume, so the login s
 These are deliberate, load-bearing boundaries. Each was considered and rejected for a concrete reason; reversing one is a product decision, not a patch.
 
 - **Not a single-network bot framework.** If you only need Telegram (or one network), beeperbox is overkill — use a network-native library (BotFather, [openclaw](https://github.com/openclaw/openclaw), etc.). beeperbox earns its weight only when you need *reach across many networks from one agent*.
-- **Not for humans who already run Beeper Desktop.** A person at a laptop with Beeper installed already has Beeper's native HTTP API and MCP server locally. beeperbox is for **autonomous agents that need messaging reach without a human at a desktop** — typically on a server or VPS.
+- **The *container* is not for humans who already run Beeper Desktop — but *lite mode* is.** A person at a laptop with Beeper installed already has Beeper's native HTTP API and MCP server, so they don't need the headless **container**. They may still want beeperbox's *opinionated 12-tool surface* — the two normalized schemas, the `source` echo-guard, the `poll_messages` watch primitive — over Beeper's raw API. **Lite mode** (§8) serves exactly that: the same `mcp/server.js`, run standalone against the user's own Beeper Desktop, no container. The container remains the answer for **autonomous agents that need messaging reach without a human at a desktop** — typically on a server or VPS.
 - **Not multi-tenant.** Beeper Desktop logs in as exactly one user at a time. Per-request token forwarding is architecturally impossible, not unbuilt. The supported pattern for N accounts is **N containers**, each with its own volume and ports (env-overridable for density on one host).
 - **Not a typed client library.** A typed Node client (`@beeperbox/node`) and a Python client (`beeperbox` on PyPI) were both dropped. MCP is the language-agnostic consumption layer; a non-agent caller can hit the raw HTTP API in ~5 lines of vanilla `fetch`/`urllib`. Revisit only on a real issue.
-- **Not an npm package.** beeperbox ships as a Docker image; `mcp/server.js` is the container's interface at `/opt/mcp/server.js` and cannot run meaningfully outside it. A `beeperbox-mcp` npm publish was built, then reverted (commit `670f8c9`) — it duplicated the distribution channel without serving a real audience.
+- **An npm package, but *only* lite mode — and it bundles no Beeper.** An earlier `beeperbox-mcp` publish was built then reverted (commit `670f8c9`) as premature: at the time it duplicated the Docker channel with no audience. The audience has since materialized — [multis](https://github.com/hamr0/multis) and other pure MCP clients whose users already run Beeper Desktop on a laptop and want the verbs without the whole container. So `mcp/server.js` is now published to npm as **`beeperbox`** (`npx beeperbox`) for **lite mode only** (§8). The boundary holds: the npm package is *just the verb server* — it does **not** bundle or headless-run Beeper Desktop (that stays the container's job, and lite mode requires the user to supply their own running Beeper).
 - **Not a real-time / streaming system.** The Beeper Desktop API is request/response. There are no push subscriptions; agents poll.
 - **Not auto-updated in place.** There is no in-container update job. The image only changes when it is rebuilt (weekly cron, or a release). This is intentional — see §7.
 - **Not affiliated with Beeper / Automattic.** Independent wrapper, Apache-2.0.
@@ -57,6 +59,7 @@ These are deliberate, load-bearing boundaries. Each was considered and rejected 
 | An autonomous agent / agent runtime that must read & send across many networks, running on a server with no human present | **Primary.** This is who beeperbox is for. |
 | A developer wiring an MCP client (Claude Code, Cursor, Cline, Continue, [bareagent](https://github.com/hamr0/bareagent)) to messaging | **Primary.** Point the client at the MCP server. |
 | A SaaS / multi-customer operator running many Beeper accounts | **Supported** via one-container-per-account on one VPS (density pattern in [`GUIDE.md`](GUIDE.md)). |
+| A developer whose MCP client / agent runs on a laptop where Beeper Desktop is already open, and who wants beeperbox's opinionated verb surface (not Beeper's raw API) | **Supported** via **lite mode** (`npx beeperbox`) — same verbs, no container (§8). |
 | A human who wants a nicer Beeper on their laptop | **Not the audience.** Use Beeper Desktop directly. |
 | Someone who needs exactly one network | **Not the audience.** Use a network-native library. |
 
@@ -102,8 +105,10 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | `BEEPERBOX_CONTAINER_NAME` | `beeperbox` | Container name, for running multiple instances. |
 | `MCP_AUTH_TOKEN` | unset | When set, every MCP HTTP request must carry `Authorization: Bearer <token>` or get `401`. |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1,[::1]` | Host/Origin allowlist (DNS-rebinding defense); set when a reverse proxy fronts a custom hostname. |
+| `MCP_BIND_ADDR` | `127.0.0.1` (container image sets `0.0.0.0`) | Interface the MCP HTTP listener binds. Loopback by default — the safe default for **lite mode**, which has no Docker loopback publish in front of it (the `Host`/`Origin` allowlist alone is bypassable by a non-browser client that spoofs `Host`). The container image bakes in `0.0.0.0` because a Docker published port can't reach a loopback-bound process; there the loopback *publish* is the boundary. To expose lite mode deliberately: `0.0.0.0` **plus** `MCP_AUTH_TOKEN` plus a tunnel. |
 | `MCP_MAX_BODY` | 1 MiB | Request body cap on the MCP HTTP transport; over-cap ⇒ `413`. |
-| `BEEPERBOX_SENT_LEDGER` | `/root/.config/beeperbox-sent-ledger.json` | Path to the echo-guard sent-message ledger (inside the persisted config volume). Best-effort; a failed write degrades the `source` guard to in-memory for that run, never fails a send. |
+| `BEEPERBOX_SENT_LEDGER` | `$XDG_CONFIG_HOME/beeperbox/sent-ledger.json` → `~/.config/beeperbox/sent-ledger.json` | Path to the echo-guard sent-message ledger. The per-user XDG default is one code path for both modes — `os.homedir()` is `/root` in the container (so it lands on the persisted config volume) and the real user's home in lite mode (so a non-root host process can actually write it; the old hardcoded `/root` default silently failed to persist on a normal host). Parent dir auto-created. Best-effort; a failed write degrades the `source` guard to in-memory for that run, never fails a send. |
+| `BEEPERBOX_PREFLIGHT` / `_PREFLIGHT_TIMEOUT_MS` | `1` (on) / `5000` | Startup preflight: one bounded `/v1/accounts` probe on boot logs a clear reachable-and-token-accepted / unreachable-or-rejected verdict to stderr (matters most in lite mode, which has no Docker `HEALTHCHECK`). Best-effort and non-fatal — an unset token or down API never blocks boot. Set `BEEPERBOX_PREFLIGHT=0` to disable. |
 | `BEEPERBOX_RESOLVE_RETRIES` / `_DELAY_MS` / `_TIMEOUT_MS` | `4` / `250` / `3000` | Echo-guard id resolution after a send: attempts to resolve `pendingMessageID` → final bridge id, delay between attempts, and per-attempt fetch timeout. Worst-case added send latency is bounded at `retries × (timeout + delay)`. Set retries `0` to disable resolution (falls back to text matching). |
 | `BEEPERBOX_SUPERVISE` / `_SUPERVISE_INTERVAL` / `_SUPERVISE_API_GRACE` | `1` / `10` / `6` | Backend supervision: enable (`0` = old forward-signal-and-wait), seconds between checks, and consecutive API-down checks (after the API has been up once) before recycling beepertexts. Non-numeric values fall back to the default. |
 | `VNC_PASSWORD` | unset | When set, the noVNC/x11vnc session requires a password (RFB security type *VNC auth*). |
@@ -123,6 +128,8 @@ A single-file, zero-dependency Node server wrapping the raw API. Two interchange
 
 - **HTTP** (default, always on): JSON-RPC 2.0 over POST on `:23375`. For remote agents, cross-container setups, cloud runtimes.
 - **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout (stdout reserved for protocol, logs to stderr), via `docker exec -i beeperbox node /opt/mcp/server.js --stdio` (here `beeperbox` is the default container name — use your `BEEPERBOX_CONTAINER_NAME` if you overrode it for a multi-instance host). For local MCP clients (Claude Code, Cursor, Cline, Continue, bareagent).
+
+Both transports also run **standalone in lite mode** — `npx beeperbox` (HTTP) or `npx beeperbox --stdio` — against a Beeper Desktop the user supplies, with no container. It is the same file, so the tool surface and version are identical; a startup preflight (§5.3) replaces the container's healthcheck as the boot sanity check.
 
 **The 12 tools:**
 
@@ -186,7 +193,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 **Load-bearing decisions (do not relitigate without changing this doc):**
 
-- **In-container listeners bind `0.0.0.0` on purpose.** A loopback bind inside the container is unreachable through a Docker published port. The defense is auth + Host/Origin + the loopback *publish*, not the bind address. (A "bind loopback" fix was proposed, tested, and rejected because it silently breaks the published port.)
+- **In-*container* listeners bind `0.0.0.0` on purpose; *lite mode* binds loopback.** A loopback bind inside the container is unreachable through a Docker published port, so the container binds `0.0.0.0` and its defense is the loopback *publish* (+ auth + Host/Origin). **Lite mode has no Docker publish in front of it**, so binding `0.0.0.0` would put the full tool surface on the LAN, reachable unauthenticated by any non-browser client that spoofs the `Host` header past the allowlist (demonstrated, not theoretical). Lite mode therefore binds `127.0.0.1` by default (`MCP_BIND_ADDR`); the container image overrides it to `0.0.0.0` via ENV. The bind is the boundary where there's no publish; the publish is the boundary where there is one.
 - **Beeper auto-update is the default and stays the default.** Pinning is opt-in; the weekly rebuild depends on the rolling URL.
 
 **Accepted residuals (documented, auditable, not bugs):**
@@ -219,6 +226,8 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 **Why not Watchtower / in-place auto-update?** Rejected as a default: a stateful, login-bearing app + the `docker.sock` attack surface, with no auto-rollback, outweighs the convenience. CI-gated publish + `:previous` is the chosen substitute.
 
+**Lite mode — the npm channel.** Alongside the Docker image, `mcp/server.js` publishes to npm as **`beeperbox`** (a zero-dependency package whose only `bin` is `beeperbox`), so the supported lite-mode install is `BEEPER_TOKEN=… npx beeperbox` (HTTP) or `npx beeperbox --stdio`. The npm `version` is the single source of truth — `serverInfo.version` reads it, and the container `COPY`s the same `package.json` into the image, so the two channels cannot report different versions (asserted by a unit test). Publishing runs from a dedicated **`.github/workflows/publish.yml`** (the hamr0 canonical publish workflow) using **npm trusted publishing over OIDC — no `NPM_TOKEN` secret**: manual `workflow_dispatch`, idempotent (skips a version already on the registry), and it asserts the published end-state rather than trusting npm's exit code. It is separate from the GHCR `release.yml` (npm versions are immutable, so it must not re-fire on the weekly image rebuild). The one-time **name reservation** is a manual first `npm publish` from `mcp/` with a token (trusted publishing can only be configured on a package that already exists); every publish thereafter goes through the OIDC workflow. This is *packaging a second consumption path for an existing audience*, not a new product surface — it reverses the earlier "not an npm package" stance (§3) precisely because that audience now exists.
+
 ---
 
 ## 9. Versioning policy
@@ -247,6 +256,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.5.1 | 2026-05-25 | CI-gated releases + `:previous` rollback; shared guard scripts as single source of truth. |
 | 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
 | 0.7.0 | 2026-06-16 | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped, src_url-confined). |
+| 0.8.0 | 2026-06-16 | Lite mode: `npx beeperbox` (npm package) against a local Beeper Desktop + startup preflight; sent-ledger per-user XDG path fix; lite mode binds loopback by default (`MCP_BIND_ADDR`, security). |
 
 ---
 
@@ -254,6 +264,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 Nothing is committed; beeperbox is feature-driven by real usage. Delivered from this list once a real user asked:
 
+- **Lite mode — `npx beeperbox` against a local Beeper Desktop** *(shipped 0.8.0)* — multis's laptop users already run Beeper Desktop and wanted beeperbox's verb surface without the whole container. Lite mode makes the standalone `mcp/server.js` a first-class, supported path: an npm package + `bin`, a startup preflight (replacing the container's healthcheck), and a one-fix bug — the echo-guard sent-ledger defaulted to a container-only `/root` path that silently failed to persist on a normal host, now a per-user XDG path. Same verb server, no new verbs; it reverses two §3 non-goals (the npm one, and "not for local-Beeper humans"), updated above because the audience materialized. Validated live against a real Beeper account on the host: the full send → restart → poll echo-guard round-trip (over HTTP) reads back `source:"api"` from the reloaded per-user ledger; the installed `npx` bin and the stdio transport were each separately exercised against the live account (real `list_accounts` + preflight). A `/security` pass on the change found and fixed the lite-mode `0.0.0.0`-bind exposure (loopback by default; see §5.3 / §7).
 - **Attachment reach — `attachments[]` + `download_asset`** *(shipped 0.7.0)* — multis needed to index files customers and the admin send (e.g. a PDF → FAQ). A normalized `Message` now surfaces each attachment's `src_url`, and `download_asset` returns the bytes (base64) through beeperbox's own `:23375` — so an MCP-only / remote deployment that doesn't publish the raw Beeper API on `:23373` can still read files. Boundary-correct: it proxies `GET /v1/assets/serve`, byte-capped to keep the JSON-RPC result bounded; it does not turn beeperbox into a file store.
 - **`poll_messages` watch primitive + `source` echo-guard** *(shipped 0.6.0)* — the first consumer-driven feature. [multis](https://github.com/hamr0/multis) was hand-rolling seed/poll/dedup against the raw API; beeperbox now exposes the cursor-based new-messages primitive and a send-origin marker natively. Boundary-correct: it adds the *ability* to watch, not a *policy* about when to poll, and it does not make beeperbox a streaming system (§3) — it's a better-shaped poll.
 
