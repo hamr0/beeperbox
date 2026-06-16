@@ -12,7 +12,9 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased] `[MINOR]`
+## [0.7.0] — 2026-06-16 `[MINOR]`
+
+Cuts 0.7.0 (MINOR) so `:latest` carries attachment reach for multis's media flow (indexing files customers/the admin send — e.g. a PDF → FAQ). New `download_asset` MCP tool + `attachments[]` on every `Message`; validated end-to-end against a live Beeper account. Tag `v0.7.0` after merge triggers the gated publish (`:0.7.0`/`:0.7`/`:0`/`:latest`, old `:latest` → `:previous`).
 
 ### Added
 
