@@ -1093,7 +1093,7 @@ If you need those, put them in front of beeperbox (reverse proxy, governance mid
 - **WhatsApp on-device bridge** sometimes logs `no bridge event found` warnings during backup. Harmless, ignore.
 - **Multi-arch image**: `linux/amd64` and `linux/arm64` are published from v0.3.0 onward — Raspberry Pi 4/5, Apple-silicon Docker Desktop, and Oracle Cloud's free ARM tier all pull the right variant automatically.
 - **No streaming subscriptions in the API**: the Beeper Desktop API is request/response. For realtime updates you poll `/v1/chats` or hook into the Beeper Desktop MCP server (advanced).
-- **Pre-1.0**. Current line is v0.4.x — the MCP tool surface, HTTP API, default ports, and `Chat`/`Message` schemas are usable but not declared stable. See [CHANGELOG.md](../CHANGELOG.md) for the versioning policy and what each bump type guarantees. Running on a personal VPS for your own agents is fine; running as a shared service is not.
+- **Pre-1.0**. Current line is v0.8.x — the MCP tool surface, HTTP API, default ports, and `Chat`/`Message` schemas are usable but not declared stable. See [CHANGELOG.md](../CHANGELOG.md) for the versioning policy and what each bump type guarantees. Running on a personal VPS for your own agents is fine; running as a shared service is not.
 
 ---
 
