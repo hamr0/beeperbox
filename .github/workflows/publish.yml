@@ -1,0 +1,109 @@
+# Canonical npm publish workflow (hamr0 standard) — adapted for beeperbox.
+#
+# beeperbox's npm package is LITE MODE only: the single, zero-dependency
+# `mcp/server.js` published as `beeperbox` (`npx beeperbox`). The package root
+# is the `mcp/` subdirectory, so every step runs there (defaults.run below).
+# No build, no lockfile, no deps — so the template's `npm ci` step is dropped;
+# `npm test` runs the node:test unit suite straight from source.
+#
+# npm trusted publishing via OIDC (no NPM_TOKEN), idempotent (skips a version
+# already on the registry), and it asserts the END STATE rather than trusting
+# npm's exit code.
+#
+# Manual by default: runs only on "Run workflow" (or `gh workflow run`). To also
+# auto-publish when you cut a GitHub Release, add back:
+#   release:
+#     types: [published]
+#
+# Before the first OIDC run: configure the trusted publisher at npmjs.com
+# (Package settings → Trusted Publisher → GitHub Actions: hamr0/beeperbox, this
+# workflow file `publish.yml`). The very first publish that RESERVES the name is
+# a one-time manual `npm publish` from `mcp/` with a token — trusted publishing
+# can only be configured on a package that already exists.
+name: Publish to npm
+
+on:
+  workflow_dispatch:        # manual "Run workflow" button — publish when you want
+
+permissions:
+  contents: read
+  id-token: write           # required: lets npm mint OIDC credentials
+
+concurrency:                # never let two publish runs race
+  group: npm-publish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: mcp  # the npm package root is the mcp/ subdir
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+      # No "npm ci": beeperbox's mcp package is zero-dependency and ships no
+      # package-lock.json, so `npm ci` would hard-fail. Nothing to install.
+      - name: Typecheck
+        run: npm run typecheck --if-present
+      - name: Test
+        run: npm test --if-present
+      - name: Skip if this version is already on npm
+        id: check
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$NAME@$VERSION" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "::notice::$NAME@$VERSION already published — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          # npm's OIDC trusted-publishing flow can exit non-zero from a trailing
+          # "generate Web Auth URLs" call (HTTP 401) AFTER the tarball +
+          # provenance have already been committed to the registry — making the
+          # step go red on a publish that actually succeeded. So don't trust the
+          # exit code: run the publish, then assert the END STATE (is the version
+          # on the registry?). A genuine failure — where the version is NOT on
+          # npm AND npm exited non-zero — still fails the step. (A blanket
+          # `|| true` would instead hide real failures, which is worse.)
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISH_EXIT=0
+          npm publish --provenance --access public || PUBLISH_EXIT=$?
+          # Registry read-after-write can lag well past 15s. Poll generously
+          # (~2 min) so the end-state check doesn't false-negative a publish that
+          # actually succeeded. `npm view` caches, so --prefer-online bypasses it.
+          PUBLISHED=""
+          for _ in $(seq 1 20); do
+            PUBLISHED=$(npm view "$NAME@$VERSION" version --prefer-online 2>/dev/null || true)
+            [ "$PUBLISHED" = "$VERSION" ] && break
+            sleep 6
+          done
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            # End state confirmed. If npm exited non-zero, that's the OIDC-401
+            # case above — downgrade to a warning.
+            if [ "$PUBLISH_EXIT" -ne 0 ]; then
+              echo "::warning::npm publish exited $PUBLISH_EXIT but $NAME@$VERSION is on the registry (known npm OIDC post-publish web-auth 401); treating as success."
+            fi
+            echo "✅ Published $NAME@$VERSION"
+          elif [ "$PUBLISH_EXIT" -eq 0 ]; then
+            # npm reported success (exit 0 = the upload HTTP call succeeded) but
+            # the registry still isn't reflecting it after the poll window. Trust
+            # the success exit here — the benign inverse of the OIDC-401 case.
+            echo "::warning::npm publish exited 0 but $NAME@$VERSION not yet visible after ~2 min (registry reflection lag); treating as success."
+            echo "✅ Published $NAME@$VERSION (npm exit 0; registry lagging)"
+          else
+            echo "::error::npm publish failed (exit $PUBLISH_EXIT) and $NAME@$VERSION is NOT on the registry."
+            exit 1
+          fi
