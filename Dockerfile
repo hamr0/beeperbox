@@ -2,6 +2,13 @@ FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:99
+# The MCP server defaults to a LOOPBACK bind (safe for lite mode / npx). The
+# container needs 0.0.0.0 — a Docker published port can't reach a loopback-bound
+# process — and here the loopback PUBLISH (127.0.0.1:23375:23375) is the
+# boundary, not the bind. Baked into the image ENV so it applies even when the
+# MCP server is started via `node` directly (e.g. the CI guard-check), not only
+# through entrypoint.sh.
+ENV MCP_BIND_ADDR=0.0.0.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \

@@ -109,8 +109,9 @@ BEEPER_TOKEN=your-token-here npx beeperbox --stdio
 | `MCP_PORT` | MCP HTTP port | `23375` |
 | `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
 | `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
+| `MCP_BIND_ADDR` | Interface the MCP server binds | `127.0.0.1` (loopback) |
 
-**Security:** the server is safe loopback-only (`127.0.0.1`, no auth). To expose it beyond your machine, set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface. Same posture as the container's `:23375`.
+**Security:** lite mode binds **loopback only** (`127.0.0.1`) by default, so it's safe with no auth — only processes on your machine (your agent, Claude Code) can reach it. Do **not** just flip it to `0.0.0.0`: a same-network attacker can spoof the `Host` header past the allowlist and reach the full tool surface (read every message, send across every network) unauthenticated. To expose it deliberately, set `MCP_BIND_ADDR=0.0.0.0` **and** `MCP_AUTH_TOKEN`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface. (The container binds `0.0.0.0` on purpose because Docker publishes it on `127.0.0.1` — that loopback *publish* is its boundary; lite mode has no such layer, which is why its *bind* is loopback.)
 
 **Supervision:** no Docker restart policy here — for an always-on lite setup, run it under `systemd` or `pm2`.
 

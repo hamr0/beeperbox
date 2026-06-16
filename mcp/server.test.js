@@ -417,6 +417,17 @@ test('the tool registry is exactly the 12 documented verbs', () => {
   assert.deepEqual([...S.TOOL_NAMES].sort(), expected);
 });
 
+// ── lite-mode bind is loopback by default (security) ──────────────
+// The MCP server used to bind 0.0.0.0 unconditionally; in lite mode (no Docker
+// loopback publish in front) that put the full tool surface on the LAN. The
+// default must be loopback so `npx beeperbox` is safe out of the box; the
+// container opts back into 0.0.0.0 via MCP_BIND_ADDR in the image ENV.
+test('BIND_ADDR defaults to loopback (127.0.0.1), not 0.0.0.0', () => {
+  // No MCP_BIND_ADDR is set in the test env, so this asserts the safe default.
+  assert.equal(process.env.MCP_BIND_ADDR, undefined);
+  assert.equal(S.BIND_ADDR, '127.0.0.1');
+});
+
 // ── ledgerPath: per-user default, not /root (gap 2) ───────────────
 // The container-only /root default silently failed to persist on any normal
 // host. The default must now be a writable per-user XDG path, with the env

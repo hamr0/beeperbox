@@ -22,6 +22,18 @@ const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
 const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
 const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 
+// Bind address. Defaults to LOOPBACK (127.0.0.1) — the safe default for lite
+// mode (`npx beeperbox` on a laptop), where the process listens directly on the
+// host with no Docker loopback publish in front of it. Binding 0.0.0.0 there
+// would put the full tool surface (read every message, send across every
+// network) on the LAN, reachable unauthenticated by anyone who can spoof the
+// `Host` header — a non-browser attacker trivially can. The container needs
+// 0.0.0.0 (a Docker published port can't reach a loopback-bound process) and
+// sets MCP_BIND_ADDR=0.0.0.0 via the image ENV; there the loopback *publish*
+// (`127.0.0.1:23375:23375`), not the bind, is the boundary. To expose lite mode
+// deliberately, set MCP_BIND_ADDR=0.0.0.0 AND MCP_AUTH_TOKEN AND a tunnel.
+const BIND_ADDR = process.env.MCP_BIND_ADDR || '127.0.0.1';
+
 // ─── http transport hardening ─────────────────────────────────────
 // The HTTP transport is the network-exposed surface (stdio is local-only).
 // Three guards, all configurable so they don't break the documented
@@ -34,10 +46,11 @@ const BEEPER_TOKEN = process.env.BEEPER_TOKEN || '';
 //                       Defaults to loopback; set it for reverse proxies.
 //   MCP_MAX_BODY      — max request body bytes (default 1 MiB) so a large
 //                       POST can't grow the in-memory buffer unbounded.
-// The listener stays bound to 0.0.0.0 ON PURPOSE: a Docker published port
-// is unreachable if the in-container process binds 127.0.0.1, so loopback
-// binding here would break `127.0.0.1:23375:23375`. Auth + Host/Origin
-// checks are the defense, not the bind address.
+// The bind address is MCP_BIND_ADDR (see above): loopback by default (safe for
+// lite mode), 0.0.0.0 in the container (where the loopback PUBLISH is the
+// boundary). In the container, Auth + Host/Origin are the in-container defense;
+// in lite mode the loopback BIND is, because a non-browser client can spoof the
+// Host header past the allowlist.
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || '';
 const MCP_ALLOWED_HOSTS = new Set(
   (process.env.MCP_ALLOWED_HOSTS || 'localhost,127.0.0.1,::1,[::1]')
@@ -1217,8 +1230,8 @@ function startHttpTransport() {
     });
   });
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[beeperbox-mcp] listening on http://0.0.0.0:${PORT}`);
+  server.listen(PORT, BIND_ADDR, () => {
+    console.log(`[beeperbox-mcp] listening on http://${BIND_ADDR}:${PORT}${BIND_ADDR === '0.0.0.0' ? ' (all interfaces — rely on a loopback publish or set MCP_AUTH_TOKEN)' : ' (loopback only)'}`);
     console.log(`[beeperbox-mcp] beeper api: ${BEEPER_API}`);
     console.log(`[beeperbox-mcp] beeper token: ${BEEPER_TOKEN ? 'set' : 'NOT SET (set BEEPER_TOKEN env var)'}`);
     console.log(`[beeperbox-mcp] http auth: ${MCP_AUTH_TOKEN ? 'required (MCP_AUTH_TOKEN set)' : 'OPEN — set MCP_AUTH_TOKEN to require a bearer token'}`);
@@ -1288,6 +1301,7 @@ module.exports = {
   // version + tool names here is what guarantees the two builds can't drift.
   VERSION,
   TOOL_NAMES: TOOLS.map((t) => t.name),
+  BIND_ADDR,
   ledgerPath,
   encodeCursor,
   decodeCursor,

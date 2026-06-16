@@ -670,8 +670,9 @@ On boot it logs a one-line reachability verdict so a bad token or unreachable Be
 | `MCP_PORT` | MCP HTTP port | `23375` |
 | `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
 | `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
+| `MCP_BIND_ADDR` | Interface the MCP server binds | `127.0.0.1` (loopback) |
 
-**Security** is the same posture as the container's `:23375`: safe loopback-only with no auth. To expose it beyond your machine, set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface.
+**Security:** lite mode binds **loopback only** (`127.0.0.1`) by default — safe with no auth, because only processes on your own machine can reach it. This is a *different* mechanism from the container: the container binds `0.0.0.0` and relies on Docker's `127.0.0.1` port publish as the boundary, but lite mode has no such layer, so its bind is the boundary. **Do not just set `MCP_BIND_ADDR=0.0.0.0`** to "make it reachable" — a same-network attacker can spoof the `Host` header past the allowlist and reach the full tool surface (read every message, send across every network) with no auth. To expose it deliberately, set `MCP_BIND_ADDR=0.0.0.0` **and** `MCP_AUTH_TOKEN`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy).
 
 **Supervision:** there's no Docker `restart: unless-stopped` here. For an always-on lite setup, run it under `systemd` or `pm2`.
 
