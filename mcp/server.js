@@ -58,6 +58,29 @@ const RESOLVE_DELAY_MS = envIntNonNeg('BEEPERBOX_RESOLVE_DELAY_MS', 250);
 // worst-case added send latency is RETRIES × (TIMEOUT + DELAY), not infinite.
 const RESOLVE_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_RESOLVE_TIMEOUT_MS', 3000);
 
+// download_asset ships the bytes base64-encoded inside the JSON-RPC result, so
+// a large attachment would bloat the response (base64 inflates ~33%) and the
+// in-memory buffer. Cap it; tunable for a deployment that needs bigger files.
+// FAQ/doc attachments — the driving use case — are well under this.
+const MAX_ASSET_BYTES = envIntNonNeg('BEEPERBOX_MAX_ASSET_BYTES', 8 * 1024 * 1024);
+// Per-call timeout on the asset-serve fetch so a hung or slow-drip source can't
+// stall the request forever and the buffer can't grow unbounded behind it.
+const ASSET_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_ASSET_TIMEOUT_MS', 30000);
+
+// Attachment src_urls are always Matrix content URLs (mxc:// / localmxc://).
+// The Beeper /v1/assets/serve endpoint ALSO accepts file:// — which, proxied
+// through download_asset, would let any MCP caller read arbitrary local files
+// in the container (env-bearing paths, the sent-ledger, anything the Beeper
+// process can read) and exfiltrate secrets. We refuse anything but mxc://
+// /localmxc:// so the tool can only reach real message attachments, never the
+// local filesystem. Applied to BOTH the caller-supplied src_url and a src_url
+// resolved off a message (a hostile sender could craft a file:// attachment).
+function assertServableSrcUrl(srcURL) {
+  if (!/^(?:mxc|localmxc):\/\//i.test(String(srcURL))) {
+    throw rpcError(-32602, 'src_url must be an mxc:// or localmxc:// URL — file:// and other schemes are refused');
+  }
+}
+
 // Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
 // "[::1]:23375" -> "[::1]").
 function hostFromHeader(value) {
@@ -115,6 +138,24 @@ async function beeperFetch(path, opts = {}) {
   try {
     const r = await fetch(`${BEEPER_API}${path}`, init);
     if (!r.ok) throw rpcError(-32001, `beeper api ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    // Binary mode (opts.raw): return the bytes + content-type instead of
+    // parsing JSON — used by download_asset to serve attachment bytes. Enforce
+    // the byte cap twice: the Content-Length header (reject before buffering a
+    // well-behaved large response) and the actual buffered length (in case the
+    // header is absent or lies). Decoding these bytes as text would corrupt
+    // them, so this path never touches r.text()/JSON.parse.
+    if (opts.raw) {
+      const max = opts.maxBytes || 0;
+      const declared = parseInt(r.headers.get('content-length') || '', 10);
+      if (max && Number.isFinite(declared) && declared > max) {
+        throw rpcError(-32005, `asset is ${declared} bytes, over the ${max}-byte cap — raise BEEPERBOX_MAX_ASSET_BYTES or fetch /v1/assets/serve directly`);
+      }
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (max && buf.length > max) {
+        throw rpcError(-32005, `asset is ${buf.length} bytes, over the ${max}-byte cap — raise BEEPERBOX_MAX_ASSET_BYTES or fetch /v1/assets/serve directly`);
+      }
+      return { bytes: buf, content_type: r.headers.get('content-type') || '' };
+    }
     // Some POST/DELETE endpoints return empty body — return null instead of throwing on r.json()
     const text = await r.text();
     if (!text) return null;
@@ -231,6 +272,24 @@ async function getAccountMap() {
 //   type          → 'TEXT' | 'MEDIA' | etc.
 //   replyTo       → optional, parent message id
 
+// Map Beeper's raw message `attachments[]` into a normalized shape MCP clients
+// can act on. Pure passthrough of the fields that already ride the raw message
+// — no extra fetch. `src_url` is the download reference (an mxc:// / localmxc://
+// Matrix content URL) that download_asset takes. `size` carries the byte length
+// (raw `fileSize`) when present. Returns [] when
+// there are no attachments, so the field is always an array.
+function normalizeAttachments(raw) {
+  const list = Array.isArray(raw?.attachments) ? raw.attachments : [];
+  return list.map((a) => ({
+    type: a.type || null,
+    file_name: a.fileName || null,
+    mime_type: a.mimeType || null,
+    src_url: a.srcURL || null,
+    size: typeof a.fileSize === 'number' ? a.fileSize : null,
+    is_voice_note: !!a.isVoiceNote,
+  }));
+}
+
 function normalizeMessage(raw, chat) {
   return {
     id: String(raw.id),
@@ -244,6 +303,9 @@ function normalizeMessage(raw, chat) {
     },
     text: raw.text || (raw.type === 'TEXT' ? '' : `[${raw.type || 'non-text'}]`),
     type: raw.type || 'TEXT',
+    // Media reach: a MEDIA message carries no usable `text`, so without this an
+    // agent could see "[MEDIA]" but never reach the file. Always an array.
+    attachments: normalizeAttachments(raw),
     timestamp: raw.timestamp || null,
     reply_to: raw.replyTo || raw.reply_to || null,
     // Echo-guard origin. Defaults assume "not sent through this beeperbox";
@@ -667,6 +729,20 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'download_asset',
+    description: 'Download the bytes of a message attachment (image, PDF, document, voice note, etc.) and return them base64-encoded. This is the MCP-only way to reach an attachment\'s actual content — use it after read_chat / poll_messages surfaces a message whose `attachments[]` carries a `src_url`. Reference the attachment EITHER by passing its `src_url` directly (the value from a normalized attachment — an mxc:// or localmxc:// URL; other schemes such as file:// are refused), OR by `chat_id` + `message_id` (+ optional `index` to pick one of several attachments), in which case beeperbox resolves the src_url for you and also returns the attachment\'s file_name / mime_type / size. Returns { content_type, bytes, encoding: "base64", data_base64, ... }. Large files are capped (default 8 MiB) to keep the JSON-RPC result bounded — raise BEEPERBOX_MAX_ASSET_BYTES if you need bigger.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        src_url: { type: 'string', description: 'The attachment\'s `src_url` (an mxc:// or localmxc:// URL) from a normalized Message attachment. file:// and other non-Matrix schemes are refused. Provide this, OR chat_id + message_id.' },
+        chat_id: { type: 'string', description: 'The chat containing the message. Required if src_url is omitted (used with message_id to resolve the attachment).' },
+        message_id: { type: 'string', description: 'The message whose attachment to download. Required if src_url is omitted.' },
+        index: { type: 'integer', description: 'Which attachment to download when resolving by message_id and the message has more than one (default 0).', default: 0, minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 async function callTool(name, args) {
@@ -891,6 +967,49 @@ async function callTool(name, args) {
       const tagged = applyEchoTags(delivered, Date.now());
       return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
     }
+
+    case 'download_asset': {
+      // Two ways to reference the attachment: a src_url directly (cheapest —
+      // multis already has it from the normalized message), or chat_id +
+      // message_id (+ index), where we fetch the message and read the src_url
+      // off attachments[index] — which also lets us return its file metadata.
+      let srcURL = args.src_url ? String(args.src_url) : '';
+      let meta = {};
+      if (!srcURL) {
+        if (!args.chat_id || !args.message_id) {
+          throw rpcError(-32602, 'download_asset requires src_url, or both chat_id and message_id');
+        }
+        const raw = await beeperFetch(
+          `/v1/chats/${encodeURIComponent(args.chat_id)}/messages/${encodeURIComponent(args.message_id)}`,
+        );
+        const atts = normalizeAttachments(raw);
+        const idx = Math.max(parseInt(args.index, 10) || 0, 0);
+        const att = atts[idx];
+        if (!att) throw rpcError(-32602, `message has no attachment at index ${idx} (found ${atts.length})`);
+        if (!att.src_url) throw rpcError(-32004, `attachment ${idx} has no src_url to download`);
+        srcURL = att.src_url;
+        meta = { file_name: att.file_name, mime_type: att.mime_type, size: att.size };
+      }
+      // Refuse file:// (and any non-Matrix scheme) BEFORE the fetch — this is
+      // the local-file-read / secret-exfil guard, covering both ref paths.
+      assertServableSrcUrl(srcURL);
+      // /v1/assets/serve streams the bytes for an mxc:// / localmxc:// URL.
+      // beeperFetch raw-mode returns the buffer + content-type, enforces the
+      // byte cap (header pre-check + buffered post-check), and the timeout
+      // bounds a hung/slow-drip source.
+      const { bytes, content_type } = await beeperFetch(
+        `/v1/assets/serve?url=${encodeURIComponent(srcURL)}`,
+        { raw: true, maxBytes: MAX_ASSET_BYTES, timeoutMs: ASSET_TIMEOUT_MS },
+      );
+      return {
+        src_url: srcURL,
+        ...meta,
+        content_type: content_type || meta.mime_type || null,
+        bytes: bytes.length,
+        encoding: 'base64',
+        data_base64: bytes.toString('base64'),
+      };
+    }
     default:
       throw rpcError(-32601, `unknown tool: ${name}`);
   }
@@ -1079,6 +1198,8 @@ module.exports = {
   advanceCursor,
   selectDelivery,
   textHash,
+  normalizeAttachments,
+  assertServableSrcUrl,
   matchSentMessage,
   recordSent,
   addResolvedId,

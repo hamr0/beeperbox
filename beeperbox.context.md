@@ -10,7 +10,7 @@
 beeperbox is a headless [Beeper Desktop](https://www.beeper.com/) in a Docker container that exposes **two things to agents**:
 
 1. **Raw Beeper Desktop HTTP API** on `127.0.0.1:23373` — the unmodified `/v1/*` endpoints for callers who want full control.
-2. **Opinionated Model Context Protocol server** on `127.0.0.1:23375` (HTTP) or stdio — 11 semantic tools, normalized `Chat` / `Message` schemas, note-to-self isolation, clean network slugs. Consume from Claude Code, Cursor, Cline, Continue, bareagent, or any other MCP-speaking runtime.
+2. **Opinionated Model Context Protocol server** on `127.0.0.1:23375` (HTTP) or stdio — 12 semantic tools, normalized `Chat` / `Message` schemas, note-to-self isolation, clean network slugs. Consume from Claude Code, Cursor, Cline, Continue, bareagent, or any other MCP-speaking runtime.
 
 Agents that consume beeperbox get read/write access to **every bridge the user's Beeper account has connected**: WhatsApp, iMessage, Signal, Discord, Slack, Telegram, Facebook Messenger, Instagram, LinkedIn, Google Messages, Matrix, and any future Beeper bridge. One config, every messenger.
 
@@ -230,6 +230,14 @@ Archive or unarchive a chat. Archived chats are removed from `list_inbox` but hi
 **Returns:** `{chat_id, archived}`.
 **Note:** Beeper does not expose a `mark_as_read` endpoint. `archive_chat` is the closest primitive for the "I am done with this conversation" pattern. Pass `archived: false` to unarchive.
 
+### `download_asset`
+
+Download a message attachment's bytes and return them base64-encoded — the MCP-only way to reach a media/PDF/document file, without touching the raw Beeper API on `:23373`. Reference the attachment by its `src_url` (off a `Message.attachments[]` entry), or by `chat_id` + `message_id` (+ `index`) and beeperbox resolves the `src_url` and returns the file's `file_name` / `mime_type` / `size`.
+
+**Arguments:** `{src_url?: string}` **or** `{chat_id: string, message_id: string, index?: number = 0}`.
+**Returns:** `{src_url, content_type, bytes, encoding: "base64", data_base64, file_name?, mime_type?, size?}`.
+**Note:** The bytes ride base64 inside the JSON-RPC result, so the asset is capped at `BEEPERBOX_MAX_ASSET_BYTES` (default 8 MiB) — an oversized file returns a clear error, not a truncated body. Internally proxies `GET /v1/assets/serve?url=…`, so a remote deployment publishing only `:23375` can still read attachments. Raise the cap or hit `serve` directly for larger files.
+
 ## Schemas
 
 Two normalized shapes. Learn them once and every tool returns the same thing.
@@ -275,6 +283,7 @@ Two normalized shapes. Learn them once and every tool returns the same thing.
   },
   "text": "are we still meeting tomorrow?",
   "type": "TEXT",
+  "attachments": [],
   "timestamp": "2026-04-13T09:30:00Z",
   "reply_to": null,
   "source": "external",
@@ -290,6 +299,7 @@ Two normalized shapes. Learn them once and every tool returns the same thing.
 | `sender.is_self` | True if the **Beeper account** sent this message — **from any client**, including the human owner typing on their phone. Distinguishes "from my account" from "from someone else". **Not an echo-guard** (see `source`). |
 | `text` | Message body. For non-text messages (media, voice, etc.) this is `"[MEDIA]"` or `"[<type>]"`. |
 | `type` | `"TEXT"`, `"MEDIA"`, etc. |
+| `attachments` | Array of the message's files, `[]` when none. Each: `{type, file_name, mime_type, src_url, size, is_voice_note}`. `src_url` (an `mxc://` / `localmxc://` URL) is the download reference — pass it to `download_asset` to pull the bytes. For a `MEDIA` message this is the only way to reach the file (`text` is just `"[MEDIA]"`). |
 | `reply_to` | Parent message ID if this is a reply, else `null`. |
 | `source` | **`"api"`** if *this* beeperbox sent the message via `send_message` / `note_to_self`; **`"external"`** otherwise. This — not `is_self` — is the echo-guard: on one account both the owner's own typed messages and the agent's API replies are `is_self: true`, so only `source` can tell "I sent this programmatically" from "the human owner sent this". Skip `source === "api"` in a poll loop; process `"external"` (the owner's own Note-to-self commands included). |
 | `client_tag` | The `client_tag` passed to `send_message` / `note_to_self` for this message, echoed back, else `null`. An idempotency key the agent can correlate to a specific send. |

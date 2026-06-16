@@ -17,6 +17,7 @@ on:
       - 'entrypoint.sh'
       - 'docker-compose.yml'
       - 'scripts/mcp-guard-check.sh'
+      - 'scripts/asset-serve-check.js'
       - '.github/workflows/mcp-test.yml'
 
 permissions:
@@ -36,6 +37,10 @@ jobs:
           node-version: '20'
       - name: Unit tests
         run: node --test mcp/server.test.js
+      - name: download_asset integration check (stub Beeper API, no account)
+        # Spins the real MCP server against a stub /v1/assets/serve and exercises
+        # the tough turns: binary integrity, both byte-cap paths, error branches.
+        run: node scripts/asset-serve-check.js
 
   mcp-guard-matrix:
     runs-on: ubuntu-latest

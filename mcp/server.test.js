@@ -152,6 +152,86 @@ test('selectDelivery: a single under-page batch delivers all at once with hasMor
   assert.equal(r.hasMore, false);
 });
 
+// ── normalizeAttachments (pure passthrough of raw attachments[]) ──
+test('normalizeAttachments: maps a raw attachment to the normalized shape', () => {
+  const raw = {
+    attachments: [{
+      type: 'file',
+      fileName: 'invoice.pdf',
+      mimeType: 'application/pdf',
+      srcURL: 'mxc://beeper.com/abc123',
+      fileSize: 20480,
+      isVoiceNote: false,
+    }],
+  };
+  assert.deepEqual(S.normalizeAttachments(raw), [{
+    type: 'file',
+    file_name: 'invoice.pdf',
+    mime_type: 'application/pdf',
+    src_url: 'mxc://beeper.com/abc123',
+    size: 20480,
+    is_voice_note: false,
+  }]);
+});
+
+test('normalizeAttachments: a message with no attachments yields [] (always an array)', () => {
+  assert.deepEqual(S.normalizeAttachments({ text: 'hi', type: 'TEXT' }), []);
+  assert.deepEqual(S.normalizeAttachments({}), []);
+  assert.deepEqual(S.normalizeAttachments(null), []);
+  // Defensive: a non-array attachments field must not throw or pass through.
+  assert.deepEqual(S.normalizeAttachments({ attachments: 'oops' }), []);
+});
+
+test('normalizeAttachments: missing optional fields become null / false, not undefined', () => {
+  // A media attachment that only carries a src_url — file_name/mime_type/size
+  // absent. They must normalize to null (not undefined) so the JSON shape is
+  // stable, and is_voice_note to a real boolean.
+  const [att] = S.normalizeAttachments({ attachments: [{ srcURL: 'mxc://h/x' }] });
+  assert.deepEqual(att, {
+    type: null, file_name: null, mime_type: null,
+    src_url: 'mxc://h/x', size: null, is_voice_note: false,
+  });
+});
+
+test('normalizeAttachments: a non-numeric fileSize does not leak through as size', () => {
+  // Guards the byte cap / consumers from a stray string sneaking into `size`.
+  const [att] = S.normalizeAttachments({ attachments: [{ srcURL: 'mxc://h/x', fileSize: '20480' }] });
+  assert.equal(att.size, null);
+});
+
+test('normalizeAttachments: preserves order and maps every entry of a multi-attachment message', () => {
+  const out = S.normalizeAttachments({ attachments: [
+    { srcURL: 'mxc://h/1', fileName: 'a.png', type: 'image' },
+    { srcURL: 'mxc://h/2', fileName: 'b.pdf', type: 'file' },
+  ] });
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((a) => a.file_name), ['a.png', 'b.pdf']);
+  assert.deepEqual(out.map((a) => a.src_url), ['mxc://h/1', 'mxc://h/2']);
+});
+
+// ── assertServableSrcUrl (download_asset local-file-read guard) ───
+test('assertServableSrcUrl: allows mxc:// and localmxc:// (the real attachment schemes)', () => {
+  assert.doesNotThrow(() => S.assertServableSrcUrl('mxc://beeper.com/abc'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl('localmxc://beeper.com/cached'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl('MXC://BEEPER.COM/ABC')); // scheme is case-insensitive
+});
+
+test('assertServableSrcUrl: refuses file:// — the arbitrary-local-file-read vector', () => {
+  // The load-bearing security assertion: a file:// src_url would let an MCP
+  // caller read /etc/passwd, the sent-ledger, env-bearing paths, etc. via the
+  // Beeper serve endpoint. Must throw a -32602 BEFORE any fetch.
+  assert.throws(() => S.assertServableSrcUrl('file:///etc/passwd'), /schemes are refused/);
+});
+
+test('assertServableSrcUrl: refuses http(s):// (SSRF) and other non-Matrix schemes', () => {
+  assert.throws(() => S.assertServableSrcUrl('http://169.254.169.254/latest/meta-data/'), /schemes are refused/);
+  assert.throws(() => S.assertServableSrcUrl('https://evil.example/x'), /schemes are refused/);
+  assert.throws(() => S.assertServableSrcUrl('ftp://h/x'), /schemes are refused/);
+  assert.throws(() => S.assertServableSrcUrl(''), /schemes are refused/);
+  // Defeat a "mxc as a path, not the scheme" smuggle attempt.
+  assert.throws(() => S.assertServableSrcUrl('file:///x?mxc://'), /schemes are refused/);
+});
+
 // ── echo-guard matcher (pure) ─────────────────────────────────────
 const NOW = 1_750_000_000_000;
 test('matchSentMessage: exact id match is source:api and echoes client_tag', () => {

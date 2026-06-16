@@ -61,12 +61,12 @@ body = json.loads(sys.argv[1])
 names = {t["name"] for t in body.get("result", {}).get("tools", [])}
 expected = {"list_accounts", "list_inbox", "list_unread", "get_chat", "read_chat",
             "search_messages", "send_message", "note_to_self", "react_to_message",
-            "archive_chat", "poll_messages"}
+            "archive_chat", "poll_messages", "download_asset"}
 missing = expected - names
 if missing:
     print(f"missing tools: {sorted(missing)}", file=sys.stderr)
     sys.exit(1)
 PY
-pass "MCP tools/list returns all 11 expected tools by name"
+pass "MCP tools/list returns all 12 expected tools by name"
 
 printf '\n\033[1;32mall checks passed\033[0m — POC is healthy\n\n'

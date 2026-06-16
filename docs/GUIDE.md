@@ -198,7 +198,7 @@ If you see an error, jump to [Troubleshooting](#troubleshooting).
 
 ### What you can do next
 
-- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports stdio or HTTP transport can consume beeperbox as a tool source. Configure it once and the LLM sees all 11 tools (`list_inbox`, `list_unread`, `poll_messages`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`, `send_message`, `note_to_self`, `react_to_message`, `archive_chat`). See the [MCP tools reference](#mcp-tools-reference) section below.
+- **Point an AI agent runtime at it**: Claude Code, Cursor, Cline, bareagent — any MCP client that supports stdio or HTTP transport can consume beeperbox as a tool source. Configure it once and the LLM sees all 12 tools (`list_inbox`, `list_unread`, `poll_messages`, `read_chat`, `get_chat`, `search_messages`, `list_accounts`, `send_message`, `note_to_self`, `react_to_message`, `archive_chat`, `download_asset`). See the [MCP tools reference](#mcp-tools-reference) section below.
 - **Build something custom**: hit the raw Beeper API on `http://localhost:23373/v1/*` from any language with an HTTP client and your `BEEPER_TOKEN`. See [Use it — real examples](#use-it--real-examples) for curl / Node / Python snippets.
 - **Deploy to a VPS**: same steps work on any Linux box with Docker. SSH-tunnel noVNC for the one-time login. See [Deploy to a VPS](#deploy-to-a-vps).
 
@@ -496,7 +496,7 @@ If you call `/v1/*` directly instead of going through the MCP tools, you inherit
 
 beeperbox exposes 11 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
 
-### The 11 tools
+### The 12 tools
 
 | Tool | Required | Returns | Use case |
 |---|---|---|---|
@@ -511,10 +511,15 @@ beeperbox exposes 11 semantic tools over Model Context Protocol on two interchan
 | `note_to_self` | `text` | same | Agent self-notes, debug output, scheduled reminders — auto-resolves to the Beeper-native Note to self chat (won't leak into per-platform saved-messages chats) |
 | `react_to_message` | `chat_id`, `message_id`, `emoji` | `{...status: reacted}` | Lightweight ack, no full reply needed |
 | `archive_chat` | `chat_id` | `{chat_id, archived}` | Clean handled chats out of inbox (closest primitive to mark-as-read that Beeper exposes) |
+| `download_asset` | `src_url` *or* `chat_id`+`message_id` | `{src_url, content_type, bytes, encoding, data_base64, ...}` | Fetch an attachment's actual bytes (base64) — reach a media/PDF/doc file an LLM can index. Capped at `BEEPERBOX_MAX_ASSET_BYTES` (default 8 MiB) |
 
 #### `poll_messages` — the watch loop
 
 A passive new-messages-since-cursor feed; the right tool for an agent that wants to *react* to incoming messages instead of repeatedly diffing `list_inbox` by hand. **Read-only** — it never marks read, archives, or mutates. First call (omit `cursor`) **seeds** from now and returns `{cursor, messages: [], seeded: true}`; pass the cursor back each subsequent call to get only newer messages plus a fresh cursor. The cursor is opaque and **restart-resumable** — persist it and resume across restarts with no missed or duplicated messages (same-millisecond messages are deduplicated by id). `has_more: true` means more is immediately fetchable — keep polling until it's `false`, then sleep. (Residual: beeperbox reads up to the newest 100 messages per chat per poll, so a chat receiving more than 100 messages between two polls can lose the oldest of that burst — Beeper's API has no backward paging; poll frequently enough, or backfill with `read_chat`.) Includes the account's own messages on purpose; branch on each message's **`source`** field (`"api"` = sent by this beeperbox, skip it; `"external"` = everything else including the owner's own Note-to-self commands) rather than `sender.is_self`, which can't tell the agent's API sends from the human's own typing. The poll interval is yours — beeperbox provides the *ability* to watch, not a *policy* about cadence.
+
+#### `download_asset` — reach an attachment's bytes (MCP-only)
+
+A media message (`type: "MEDIA"`) carries no usable `text` — its file lives behind the `attachments[]` array each normalized `Message` now exposes (`{type, file_name, mime_type, src_url, size, is_voice_note}`). `download_asset` is how an MCP-only agent pulls that file's actual bytes without touching the raw Beeper Desktop API on `:23373`: reference the attachment **either** by its `src_url` (the value straight off the attachment — an `mxc://` / `localmxc://` URL; `file://` and other non-Matrix schemes are refused, so the tool can only reach real attachments, never the container's local filesystem) **or** by `chat_id` + `message_id` (+ optional `index` to pick one of several), in which case beeperbox resolves the `src_url` and also returns the file's `file_name` / `mime_type` / `size`. The bytes come back **base64** in `data_base64` (with `content_type`, `bytes`, `encoding`). Because the payload is base64 inside the JSON-RPC result, it's capped at `BEEPERBOX_MAX_ASSET_BYTES` (default 8 MiB) — an oversized asset returns a clear error rather than a truncated file; raise the cap, or fetch `GET /v1/assets/serve?url=…` directly, for larger files. Internally `download_asset` proxies that same `serve` endpoint, so a remote/MCP-only deployment that only publishes `:23375` can still read attachments.
 
 ### Schemas the LLM learns once and reuses everywhere
 
@@ -537,6 +542,7 @@ Message:
   sender           { id, name, is_self }   # is_self = sent by my account from ANY client
   text             message body (or "[MEDIA]" / "[non-text]" for non-text types)
   type             "TEXT" | "MEDIA" | ...
+  attachments      array of { type, file_name, mime_type, src_url, size, is_voice_note }; [] when none
   timestamp        ISO 8601
   reply_to         parent message id if this is a reply, else null
   source           "api" if THIS beeperbox sent it (send_message/note_to_self), else "external"

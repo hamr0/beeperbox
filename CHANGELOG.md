@@ -12,6 +12,21 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [Unreleased] `[MINOR]`
+
+### Added
+
+- **Attachment reach for media messages.** Every normalized `Message` now carries an `attachments[]` array (`[]` when none); each entry is `{type, file_name, mime_type, src_url, size, is_voice_note}`, a pure passthrough of the raw Beeper message's `attachments[]`. Previously a media message arrived as `type: "MEDIA"`, `text: "[MEDIA]"` with no way to reach the file — an agent could see that a file existed but never read it. `src_url` (an `mxc://` / `localmxc://` / `file://` URL) is the download reference.
+- **New MCP tool `download_asset`** (12 tools now). Fetches an attachment's actual bytes and returns them base64-encoded — the MCP-only path to a file's content, so a remote deployment publishing only `:23375` (not the raw Beeper API on `:23373`) can still read attachments. Reference the attachment by `src_url`, or by `chat_id` + `message_id` (+ optional `index`) in which case beeperbox resolves the `src_url` and also returns the file's `file_name` / `mime_type` / `size`. Internally proxies `GET /v1/assets/serve?url=…`. The payload rides base64 inside the JSON-RPC result, so it is capped at `BEEPERBOX_MAX_ASSET_BYTES` (default 8 MiB, tunable) — an oversized asset returns a clear error (Content-Length pre-check + buffered post-check) rather than a truncated body; raise the cap or hit `serve` directly for larger files.
+
+### Security
+
+- **`download_asset` refuses non-Matrix `src_url` schemes.** The Beeper `serve` endpoint also accepts `file://`, so an unguarded proxy would let any MCP caller read arbitrary local files in the container (env-bearing paths, the sent-ledger — i.e. `BEEPER_TOKEN` / `MCP_AUTH_TOKEN` exfiltration) and reach internal hosts via `http(s)://` (SSRF). `download_asset` now allowlists `mxc://` / `localmxc://` and rejects everything else **before** the fetch — covering both the caller-supplied `src_url` and a `src_url` resolved off a (potentially hostile-sender-crafted) message attachment. A per-call timeout (`BEEPERBOX_ASSET_TIMEOUT_MS`, default 30 s) bounds a hung or slow-drip source so it can't stall the request or grow the buffer unbounded.
+
+### Notes
+
+- The `serve`-proxy I/O path needs a live Beeper account to exercise end-to-end (CI has none); it is proven against a stub Beeper API (exact-byte base64 round-trip, both reference paths, cap rejection). The pure `normalizeAttachments` mapping is unit-tested. Validate against a real account before relying on it for production media flows.
+
 ## [0.6.0] — 2026-06-15 `[MINOR]`
 
 First release driven end-to-end by a real consumer ([multis](https://github.com/hamr0/multis), beeperbox's first customer): a watch primitive and a reliable echo-guard so an agent can react to incoming messages without reinventing the seed/poll/dedup loop or echo-looping on its own sends, plus two container-lifecycle robustness fixes. MINOR per the versioning policy — new MCP tool + additive schema fields + new runtime behavior, all backward compatible. **Live-validation note:** the `source` echo-guard and the `pendingMessageID` → final-bridge-id resolution were validated against a real Beeper account by multis (CI has none); the standard release gate (guard + VNC probes) still runs the server standalone.
