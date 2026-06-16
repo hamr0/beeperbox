@@ -3,7 +3,7 @@
 > **This is the grounding document for beeperbox: what it is, what it is *not*, and why.**
 > When a feature, a release, or a "wouldn't it be cool if…" idea is on the table, it gets measured against this doc. Anything that contradicts the "Non-goals" section is rejected by default unless this document is changed first.
 
-- **Status:** shipped and in use. Current release **v0.6.0** (2026-06-15); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
+- **Status:** shipped and in use. Current release **v0.7.0** (2026-06-16); rolling changes tracked in [`CHANGELOG.md`](../CHANGELOG.md).
 - **Distribution:** pre-built multi-arch image on GHCR — `ghcr.io/hamr0/beeperbox` (`linux/amd64` + `linux/arm64`).
 - **License:** [Apache-2.0](../LICENSE). Independent wrapper around Beeper Desktop; **no affiliation** with Beeper / Automattic.
 - **Related deep-dive docs:** [`GUIDE.md`](GUIDE.md) (human operator walkthrough), [`../beeperbox.context.md`](../beeperbox.context.md) (AI-assistant integration guide).
@@ -97,7 +97,7 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | Var | Default | Effect |
 |---|---|---|
 | `BEEPER_TOKEN` | unset | Bearer token minted in Beeper Desktop; authenticates raw-API and MCP calls upstream. |
-| `BEEPERBOX_IMAGE_TAG` | `latest` | Which GHCR tag to run (`0.6.0`, `0.6`, `0`, `latest`, `previous`, `edge`, or a `@sha256:` digest). |
+| `BEEPERBOX_IMAGE_TAG` | `latest` | Which GHCR tag to run (`0.7.0`, `0.7`, `0`, `latest`, `previous`, `edge`, or a `@sha256:` digest). |
 | `BEEPERBOX_HOST_PORT` / `_NOVNC_PORT` / `_MCP_PORT` | `23373` / `6080` / `23375` | Host-side port remapping for multi-instance hosts. |
 | `BEEPERBOX_CONTAINER_NAME` | `beeperbox` | Container name, for running multiple instances. |
 | `MCP_AUTH_TOKEN` | unset | When set, every MCP HTTP request must carry `Authorization: Bearer <token>` or get `401`. |
@@ -180,7 +180,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 - **Privilege-escalation hardening** — `security_opt: [no-new-privileges:true]`, shrinking the blast radius of Beeper running as root with `--no-sandbox`.
 - **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; default stays rolling auto-update.
 
-**Unreleased hardening** — alongside `download_asset` (see CHANGELOG):
+**v0.7.0 hardening** — alongside `download_asset` (see CHANGELOG):
 
 - **`download_asset` src_url confinement (defense-in-depth)** — the tool proxies Beeper's `serve` endpoint, which accepts `file://` paths. Beeper independently restricts these (`403` outside its media dir, `400` for a non-`mxc`/`localmxc`/`file` scheme — confirmed live), but `download_asset` is the network-reachable MCP surface and does not rely on that undocumented upstream guard: it allows `mxc://` / `localmxc://`, allows `file://` only inside the media cache (`BEEPERBOX_ASSET_FILE_ROOT`), and refuses any other path, scheme, URL host, or encoded-`../` traversal **before** the fetch — for both a caller-supplied and a message-resolved `src_url`. Not a patched live exploit; a second in-repo boundary that survives an upstream regression.
 
@@ -246,7 +246,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.5.0 | 2026-05-24 | Security hardening: MCP auth + Host/Origin + body cap, VNC password, `no-new-privileges`, opt-in pinned builds. |
 | 0.5.1 | 2026-05-25 | CI-gated releases + `:previous` rollback; shared guard scripts as single source of truth. |
 | 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
-| Unreleased | — | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped). |
+| 0.7.0 | 2026-06-16 | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped, src_url-confined). |
 
 ---
 
@@ -254,7 +254,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 Nothing is committed; beeperbox is feature-driven by real usage. Delivered from this list once a real user asked:
 
-- **Attachment reach — `attachments[]` + `download_asset`** *(unreleased — see CHANGELOG)* — multis needed to index files customers and the admin send (e.g. a PDF → FAQ). A normalized `Message` now surfaces each attachment's `src_url`, and `download_asset` returns the bytes (base64) through beeperbox's own `:23375` — so an MCP-only / remote deployment that doesn't publish the raw Beeper API on `:23373` can still read files. Boundary-correct: it proxies `GET /v1/assets/serve`, byte-capped to keep the JSON-RPC result bounded; it does not turn beeperbox into a file store.
+- **Attachment reach — `attachments[]` + `download_asset`** *(shipped 0.7.0)* — multis needed to index files customers and the admin send (e.g. a PDF → FAQ). A normalized `Message` now surfaces each attachment's `src_url`, and `download_asset` returns the bytes (base64) through beeperbox's own `:23375` — so an MCP-only / remote deployment that doesn't publish the raw Beeper API on `:23373` can still read files. Boundary-correct: it proxies `GET /v1/assets/serve`, byte-capped to keep the JSON-RPC result bounded; it does not turn beeperbox into a file store.
 - **`poll_messages` watch primitive + `source` echo-guard** *(shipped 0.6.0)* — the first consumer-driven feature. [multis](https://github.com/hamr0/multis) was hand-rolling seed/poll/dedup against the raw API; beeperbox now exposes the cursor-based new-messages primitive and a send-origin marker natively. Boundary-correct: it adds the *ability* to watch, not a *policy* about when to poll, and it does not make beeperbox a streaming system (§3) — it's a better-shaped poll.
 
 Candidates discussed, not built:

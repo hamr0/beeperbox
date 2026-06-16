@@ -29,7 +29,7 @@ curl -LO https://raw.githubusercontent.com/hamr0/beeperbox/master/docker-compose
 docker compose up -d
 ```
 
-Pulls the pre-built multi-arch image (`ghcr.io/hamr0/beeperbox:latest`, `linux/amd64` + `linux/arm64`). No clone, no build. Pin a version with `BEEPERBOX_IMAGE_TAG=0.6.0 docker compose up -d`, or track master with `:edge` (may break).
+Pulls the pre-built multi-arch image (`ghcr.io/hamr0/beeperbox:latest`, `linux/amd64` + `linux/arm64`). No clone, no build. Pin a version with `BEEPERBOX_IMAGE_TAG=0.7.0 docker compose up -d`, or track master with `:edge` (may break).
 
 **2. Log in once**
 
