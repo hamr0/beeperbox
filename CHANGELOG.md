@@ -12,7 +12,7 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
+## [0.8.0] — 2026-06-16 `[MINOR]`
 
 **Lite mode** — a first-class, supported way to run beeperbox's MCP verb server standalone against a Beeper Desktop the user already runs locally (no Docker, no Electron, no Xvfb). Driven by [multis](https://github.com/hamr0/multis), beeperbox's first consumer: laptop users with Beeper already open get the verbs without the whole container, while the container stays the answer for always-on/VPS. Same single `mcp/server.js` either way, so the tool surface and `serverInfo.version` are identical by construction — lite mode is the *packaging*, not a fork. MINOR per the versioning policy (new runtime behavior — a boot preflight + new distribution mode), and it carries one bug fix that also mattered to the container. Validated live: the full send → restart → poll round-trip echo-guard persistence was proven against a real Beeper account running on the host.
 
