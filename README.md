@@ -64,7 +64,7 @@ Done.
 |---|---|---|
 | `6080` | noVNC web UI — first-run login only | `127.0.0.1` |
 | `23373` | Raw Beeper Desktop HTTP API | `127.0.0.1` |
-| `23375` | Opinionated 11-tool MCP server | `127.0.0.1` |
+| `23375` | Opinionated 12-tool MCP server | `127.0.0.1` |
 
 All three are env-overridable (`BEEPERBOX_NOVNC_PORT`, `BEEPERBOX_HOST_PORT`, `BEEPERBOX_MCP_PORT`) so you can run multiple instances on one VPS. For remote access use SSH tunnel, Tailscale, or a TLS reverse proxy — never drop the `127.0.0.1` prefix.
 

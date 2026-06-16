@@ -152,6 +152,120 @@ test('selectDelivery: a single under-page batch delivers all at once with hasMor
   assert.equal(r.hasMore, false);
 });
 
+// ── normalizeAttachments (pure passthrough of raw attachments[]) ──
+test('normalizeAttachments: maps a raw attachment to the normalized shape', () => {
+  const raw = {
+    attachments: [{
+      type: 'file',
+      fileName: 'invoice.pdf',
+      mimeType: 'application/pdf',
+      srcURL: 'mxc://beeper.com/abc123',
+      fileSize: 20480,
+      isVoiceNote: false,
+    }],
+  };
+  assert.deepEqual(S.normalizeAttachments(raw), [{
+    type: 'file',
+    file_name: 'invoice.pdf',
+    mime_type: 'application/pdf',
+    src_url: 'mxc://beeper.com/abc123',
+    size: 20480,
+    is_voice_note: false,
+  }]);
+});
+
+test('normalizeAttachments: a message with no attachments yields [] (always an array)', () => {
+  assert.deepEqual(S.normalizeAttachments({ text: 'hi', type: 'TEXT' }), []);
+  assert.deepEqual(S.normalizeAttachments({}), []);
+  assert.deepEqual(S.normalizeAttachments(null), []);
+  // Defensive: a non-array attachments field must not throw or pass through.
+  assert.deepEqual(S.normalizeAttachments({ attachments: 'oops' }), []);
+});
+
+test('normalizeAttachments: missing optional fields become null / false, not undefined', () => {
+  // A media attachment that only carries a src_url — file_name/mime_type/size
+  // absent. They must normalize to null (not undefined) so the JSON shape is
+  // stable, and is_voice_note to a real boolean.
+  const [att] = S.normalizeAttachments({ attachments: [{ srcURL: 'mxc://h/x' }] });
+  assert.deepEqual(att, {
+    type: null, file_name: null, mime_type: null,
+    src_url: 'mxc://h/x', size: null, is_voice_note: false,
+  });
+});
+
+test('normalizeAttachments: a non-numeric fileSize does not leak through as size', () => {
+  // Guards the byte cap / consumers from a stray string sneaking into `size`.
+  const [att] = S.normalizeAttachments({ attachments: [{ srcURL: 'mxc://h/x', fileSize: '20480' }] });
+  assert.equal(att.size, null);
+});
+
+test('normalizeAttachments: preserves order and maps every entry of a multi-attachment message', () => {
+  const out = S.normalizeAttachments({ attachments: [
+    { srcURL: 'mxc://h/1', fileName: 'a.png', type: 'image' },
+    { srcURL: 'mxc://h/2', fileName: 'b.pdf', type: 'file' },
+  ] });
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((a) => a.file_name), ['a.png', 'b.pdf']);
+  assert.deepEqual(out.map((a) => a.src_url), ['mxc://h/1', 'mxc://h/2']);
+});
+
+// ── assertServableSrcUrl (download_asset local-file-read guard) ───
+// Real attachment src_urls (verified live) are mxc:// / localmxc:// for remote
+// media, and file:///root/.config/BeeperTexts/media/... once Beeper caches the
+// file locally. The guard must serve all three yet refuse file:// outside that
+// cache (and other schemes) — else an MCP caller reads arbitrary local files.
+const MEDIA = 'file:///root/.config/BeeperTexts/media/';
+
+test('assertServableSrcUrl: allows mxc:// and localmxc:// (remote attachment schemes)', () => {
+  assert.doesNotThrow(() => S.assertServableSrcUrl('mxc://beeper.com/abc'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl('localmxc://beeper.com/cached'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl('MXC://BEEPER.COM/ABC')); // scheme is case-insensitive
+});
+
+test('assertServableSrcUrl: allows file:// INSIDE the Beeper media cache (the cached-attachment case)', () => {
+  assert.doesNotThrow(() => S.assertServableSrcUrl(MEDIA + 'local.beeper.com/x.pdf'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl(MEDIA + 'a/b/c/deep.bin'));
+});
+
+test('assertServableSrcUrl: refuses file:// OUTSIDE the cache — the arbitrary-local-file-read vector', () => {
+  // The load-bearing security assertion: these would read secrets via serve.
+  assert.throws(() => S.assertServableSrcUrl('file:///etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('file:///root/.config/beeperbox-sent-ledger.json'), /refused/);
+  // A sibling dir that shares the prefix but isn't the cache (trailing-slash guard).
+  assert.throws(() => S.assertServableSrcUrl('file:///root/.config/BeeperTexts/mediahack/x'), /refused/);
+});
+
+test('assertServableSrcUrl: refuses ../ and percent-encoded traversal out of the cache', () => {
+  // new URL() does NOT collapse ../, so the guard decodes + path.normalize()s
+  // before the prefix check. These must NOT escape to /etc or the config dir.
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '../../../etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '..%2f..%2f..%2fetc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '%2e%2e/%2e%2e/beeperbox-sent-ledger.json'), /refused/);
+});
+
+test('assertServableSrcUrl: refuses DOUBLE-encoded traversal (%252e) without re-decoding it open', () => {
+  // %252e -> one decode -> %2e (a literal dot-encoding). The guard refuses any
+  // residual %2e/%2f after a single decode rather than forwarding it — serve
+  // single-decodes too, so this never reaches the filesystem either way.
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '%252e%252e/%252e%252e/etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + 'a%252fb'), /refused/);
+});
+
+test('assertServableSrcUrl: refuses a file:// URL with a non-empty host (authority is forwarded, not path-checked)', () => {
+  // file://attacker/<media-path> has a valid-looking pathname but a host the
+  // pathname check would miss; the original url (host and all) is what we
+  // forward, so reject any authority. file://localhost/… is fine (host empties).
+  assert.throws(() => S.assertServableSrcUrl('file://attacker/root/.config/BeeperTexts/media/x'), /refused/);
+  assert.doesNotThrow(() => S.assertServableSrcUrl('file://localhost/root/.config/BeeperTexts/media/x'));
+});
+
+test('assertServableSrcUrl: refuses http(s):// (SSRF) and other non-Matrix schemes', () => {
+  assert.throws(() => S.assertServableSrcUrl('http://169.254.169.254/latest/meta-data/'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('https://evil.example/x'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('ftp://h/x'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(''), /refused/);
+});
+
 // ── echo-guard matcher (pure) ─────────────────────────────────────
 const NOW = 1_750_000_000_000;
 test('matchSentMessage: exact id match is source:api and echoes client_tag', () => {

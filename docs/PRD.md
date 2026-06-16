@@ -29,7 +29,7 @@ A single Docker container that bundles, in one image:
 1. **Headless Beeper Desktop** — the real Electron app, run under a virtual display (Xvfb + openbox), no GPU, no human.
 2. **A first-run login surface** — a noVNC web UI (`:6080`) used exactly once, to sign into Beeper and mint an API token. Not part of the steady-state runtime path.
 3. **The raw Beeper Desktop HTTP API** (`:23373`), made reachable from outside the container's loopback-only Electron binding via a `socat` forwarder.
-4. **An opinionated MCP server** (`:23375`) — vanilla Node, zero npm dependencies, a single `mcp/server.js` — wrapping the raw API in **11 semantic tools** and **2 normalized schemas** so an LLM never touches raw Beeper endpoints.
+4. **An opinionated MCP server** (`:23375`) — vanilla Node, zero npm dependencies, a single `mcp/server.js` — wrapping the raw API in **12 semantic tools** and **2 normalized schemas** so an LLM never touches raw Beeper endpoints.
 
 State (login, bridge sync, token) lives in a named Docker volume, so the login survives restarts, rebuilds, and host reboots. The image is published pre-built and multi-arch; the common path is *pull and run*, not clone-and-build.
 
@@ -88,7 +88,7 @@ Xvfb (virtual display)
 |---|---|---|---|
 | `6080` | noVNC web UI — **first-run login only** | `127.0.0.1` | `BEEPERBOX_NOVNC_PORT` |
 | `23373` | Raw Beeper Desktop HTTP API (via socat `:23380`) | `127.0.0.1` | `BEEPERBOX_HOST_PORT` |
-| `23375` | Opinionated 11-tool MCP server (HTTP transport) | `127.0.0.1` | `BEEPERBOX_MCP_PORT` |
+| `23375` | Opinionated 12-tool MCP server (HTTP transport) | `127.0.0.1` | `BEEPERBOX_MCP_PORT` |
 
 All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in (SSH tunnel, Tailscale/Wireguard, or a TLS-terminating reverse proxy with auth) — never by dropping the loopback prefix. The container name is also env-overridable (`BEEPERBOX_CONTAINER_NAME`) so multiple instances can coexist on one host.
 
@@ -124,7 +124,7 @@ A single-file, zero-dependency Node server wrapping the raw API. Two interchange
 - **HTTP** (default, always on): JSON-RPC 2.0 over POST on `:23375`. For remote agents, cross-container setups, cloud runtimes.
 - **stdio** (on demand): newline-delimited JSON-RPC over stdin/stdout (stdout reserved for protocol, logs to stderr), via `docker exec -i beeperbox node /opt/mcp/server.js --stdio` (here `beeperbox` is the default container name — use your `BEEPERBOX_CONTAINER_NAME` if you overrode it for a multi-instance host). For local MCP clients (Claude Code, Cursor, Cline, Continue, bareagent).
 
-**The 11 tools:**
+**The 12 tools:**
 
 | Tool | What it does | Access |
 |---|---|---|
@@ -139,12 +139,13 @@ A single-file, zero-dependency Node server wrapping the raw API. Two interchange
 | `note_to_self` | Send to the agent's own note-to-self chat (auto-resolved, Beeper-native matrix), the dedicated command/control channel — excluded from inbox views | write |
 | `react_to_message` | Add an emoji reaction (unicode, shortcode, or custom key) | write |
 | `archive_chat` | Archive/unarchive (stands in for mark-as-read, which Beeper exposes no endpoint for) | write |
+| `download_asset` | Fetch a message attachment's bytes (base64) by `src_url` or `chat_id`+`message_id`; capped at `BEEPERBOX_MAX_ASSET_BYTES` | read |
 
 **Two normalized schemas** the LLM learns once and reuses everywhere:
 
 ```
 Chat:    { id, title, network, network_label, is_group, is_note_to_self, last_message_at, unread_count }
-Message: { id, chat_id, network, network_label, sender{id,name,is_self}, text, type, timestamp, reply_to, source, client_tag }
+Message: { id, chat_id, network, network_label, sender{id,name,is_self}, text, type, attachments[], timestamp, reply_to, source, client_tag }
 ```
 
 Every chat and message carries both `network` (machine slug: `whatsapp`, `telegram`, …) and `network_label` (human: `"WhatsApp"`, …), normalized off `/v1/accounts` with chat-bridge-ID parsing as fallback. The **note-to-self vs inbox split** is a core design invariant: the agent's command channel must never pollute customer conversations, and customer inbox views must never surface the agent's own notes.
@@ -178,6 +179,10 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 - **VNC password (opt-in)** — `VNC_PASSWORD` switches x11vnc from RFB *None* to *VNC auth*, gating GUI takeover on `:6080`.
 - **Privilege-escalation hardening** — `security_opt: [no-new-privileges:true]`, shrinking the blast radius of Beeper running as root with `--no-sandbox`.
 - **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; default stays rolling auto-update.
+
+**Unreleased hardening** — alongside `download_asset` (see CHANGELOG):
+
+- **`download_asset` src_url confinement (defense-in-depth)** — the tool proxies Beeper's `serve` endpoint, which accepts `file://` paths. Beeper independently restricts these (`403` outside its media dir, `400` for a non-`mxc`/`localmxc`/`file` scheme — confirmed live), but `download_asset` is the network-reachable MCP surface and does not rely on that undocumented upstream guard: it allows `mxc://` / `localmxc://`, allows `file://` only inside the media cache (`BEEPERBOX_ASSET_FILE_ROOT`), and refuses any other path, scheme, URL host, or encoded-`../` traversal **before** the fetch — for both a caller-supplied and a message-resolved `src_url`. Not a patched live exploit; a second in-repo boundary that survives an upstream regression.
 
 **Load-bearing decisions (do not relitigate without changing this doc):**
 
@@ -241,6 +246,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.5.0 | 2026-05-24 | Security hardening: MCP auth + Host/Origin + body cap, VNC password, `no-new-privileges`, opt-in pinned builds. |
 | 0.5.1 | 2026-05-25 | CI-gated releases + `:previous` rollback; shared guard scripts as single source of truth. |
 | 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
+| Unreleased | — | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped). |
 
 ---
 
@@ -248,7 +254,8 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 Nothing is committed; beeperbox is feature-driven by real usage. Delivered from this list once a real user asked:
 
-- **`poll_messages` watch primitive + `source` echo-guard** *(unreleased — see CHANGELOG)* — the first consumer-driven feature. [multis](https://github.com/hamr0/multis) was hand-rolling seed/poll/dedup against the raw API; beeperbox now exposes the cursor-based new-messages primitive and a send-origin marker natively. Boundary-correct: it adds the *ability* to watch, not a *policy* about when to poll, and it does not make beeperbox a streaming system (§3) — it's a better-shaped poll.
+- **Attachment reach — `attachments[]` + `download_asset`** *(unreleased — see CHANGELOG)* — multis needed to index files customers and the admin send (e.g. a PDF → FAQ). A normalized `Message` now surfaces each attachment's `src_url`, and `download_asset` returns the bytes (base64) through beeperbox's own `:23375` — so an MCP-only / remote deployment that doesn't publish the raw Beeper API on `:23373` can still read files. Boundary-correct: it proxies `GET /v1/assets/serve`, byte-capped to keep the JSON-RPC result bounded; it does not turn beeperbox into a file store.
+- **`poll_messages` watch primitive + `source` echo-guard** *(shipped 0.6.0)* — the first consumer-driven feature. [multis](https://github.com/hamr0/multis) was hand-rolling seed/poll/dedup against the raw API; beeperbox now exposes the cursor-based new-messages primitive and a send-origin marker natively. Boundary-correct: it adds the *ability* to watch, not a *policy* about when to poll, and it does not make beeperbox a streaming system (§3) — it's a better-shaped poll.
 
 Candidates discussed, not built:
 
