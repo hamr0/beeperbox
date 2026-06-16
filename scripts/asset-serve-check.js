@@ -113,15 +113,21 @@ beeper.listen(0, '127.0.0.1', () => {
     const e3 = await rpc(mcpPort, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'download_asset', arguments: {} } });
     check(/requires src_url/.test(e3.error?.message || ''), 'missing ref errors clearly');
 
-    // ── SECURITY: file:// (and non-Matrix schemes) must be refused BEFORE the
-    // serve fetch — else an MCP caller reads arbitrary local files. The refusal
-    // message is distinct from any serve-path error, proving the fetch never ran.
+    // ── SECURITY: file:// outside Beeper's media cache (and non-Matrix schemes)
+    // must be refused BEFORE the serve fetch — else an MCP caller reads arbitrary
+    // local files. The refusal message is distinct from any serve-path error,
+    // proving the fetch never ran. file:// INSIDE the cache is the real cached-
+    // attachment case and must still download (verified live).
     const s1 = await rpc(mcpPort, { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file:///etc/passwd' } } });
-    check(/file:\/\/ and other schemes are refused/.test(s1.error?.message || ''), `file:// src_url is REFUSED (local-file-read guard): ${s1.error?.message || 'NO ERROR'}`);
+    check(/refused/.test(s1.error?.message || ''), `file:///etc/passwd is REFUSED (local-file-read guard): ${s1.error?.message || 'NO ERROR'}`);
     const s2 = await rpc(mcpPort, { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'http://169.254.169.254/latest/meta-data/' } } });
-    check(/schemes are refused/.test(s2.error?.message || ''), 'http:// src_url (SSRF) is refused too');
-    const s3 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'localmxc://h/cached' } } }));
-    check(!s3.__error, 'localmxc:// (legit local-cache attachment scheme) is still allowed');
+    check(/refused/.test(s2.error?.message || ''), 'http:// src_url (SSRF) is refused too');
+    const s3 = await rpc(mcpPort, { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file:///root/.config/BeeperTexts/media/../../../etc/passwd' } } });
+    check(/refused/.test(s3.error?.message || ''), '../ traversal out of the media cache is refused');
+    const s4 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file:///root/.config/BeeperTexts/media/local.beeper.com/cached.bin' } } }));
+    check(!s4.__error, 'file:// INSIDE the media cache (the real cached-attachment case) still downloads');
+    const s5 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'localmxc://h/cached' } } }));
+    check(!s5.__error, 'localmxc:// is still allowed');
 
     // ── attachments[] surfaced on a normalized read (via the message endpoint shape) ──
     const d3 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'download_asset', arguments: { chat_id: 'c1', message_id: 'm1' } } }));

@@ -210,26 +210,44 @@ test('normalizeAttachments: preserves order and maps every entry of a multi-atta
 });
 
 // ── assertServableSrcUrl (download_asset local-file-read guard) ───
-test('assertServableSrcUrl: allows mxc:// and localmxc:// (the real attachment schemes)', () => {
+// Real attachment src_urls (verified live) are mxc:// / localmxc:// for remote
+// media, and file:///root/.config/BeeperTexts/media/... once Beeper caches the
+// file locally. The guard must serve all three yet refuse file:// outside that
+// cache (and other schemes) — else an MCP caller reads arbitrary local files.
+const MEDIA = 'file:///root/.config/BeeperTexts/media/';
+
+test('assertServableSrcUrl: allows mxc:// and localmxc:// (remote attachment schemes)', () => {
   assert.doesNotThrow(() => S.assertServableSrcUrl('mxc://beeper.com/abc'));
   assert.doesNotThrow(() => S.assertServableSrcUrl('localmxc://beeper.com/cached'));
   assert.doesNotThrow(() => S.assertServableSrcUrl('MXC://BEEPER.COM/ABC')); // scheme is case-insensitive
 });
 
-test('assertServableSrcUrl: refuses file:// — the arbitrary-local-file-read vector', () => {
-  // The load-bearing security assertion: a file:// src_url would let an MCP
-  // caller read /etc/passwd, the sent-ledger, env-bearing paths, etc. via the
-  // Beeper serve endpoint. Must throw a -32602 BEFORE any fetch.
-  assert.throws(() => S.assertServableSrcUrl('file:///etc/passwd'), /schemes are refused/);
+test('assertServableSrcUrl: allows file:// INSIDE the Beeper media cache (the cached-attachment case)', () => {
+  assert.doesNotThrow(() => S.assertServableSrcUrl(MEDIA + 'local.beeper.com/x.pdf'));
+  assert.doesNotThrow(() => S.assertServableSrcUrl(MEDIA + 'a/b/c/deep.bin'));
+});
+
+test('assertServableSrcUrl: refuses file:// OUTSIDE the cache — the arbitrary-local-file-read vector', () => {
+  // The load-bearing security assertion: these would read secrets via serve.
+  assert.throws(() => S.assertServableSrcUrl('file:///etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('file:///root/.config/beeperbox-sent-ledger.json'), /refused/);
+  // A sibling dir that shares the prefix but isn't the cache (trailing-slash guard).
+  assert.throws(() => S.assertServableSrcUrl('file:///root/.config/BeeperTexts/mediahack/x'), /refused/);
+});
+
+test('assertServableSrcUrl: refuses ../ and percent-encoded traversal out of the cache', () => {
+  // new URL() does NOT collapse ../, so the guard decodes + path.normalize()s
+  // before the prefix check. These must NOT escape to /etc or the config dir.
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '../../../etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '..%2f..%2f..%2fetc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '%2e%2e/%2e%2e/beeperbox-sent-ledger.json'), /refused/);
 });
 
 test('assertServableSrcUrl: refuses http(s):// (SSRF) and other non-Matrix schemes', () => {
-  assert.throws(() => S.assertServableSrcUrl('http://169.254.169.254/latest/meta-data/'), /schemes are refused/);
-  assert.throws(() => S.assertServableSrcUrl('https://evil.example/x'), /schemes are refused/);
-  assert.throws(() => S.assertServableSrcUrl('ftp://h/x'), /schemes are refused/);
-  assert.throws(() => S.assertServableSrcUrl(''), /schemes are refused/);
-  // Defeat a "mxc as a path, not the scheme" smuggle attempt.
-  assert.throws(() => S.assertServableSrcUrl('file:///x?mxc://'), /schemes are refused/);
+  assert.throws(() => S.assertServableSrcUrl('http://169.254.169.254/latest/meta-data/'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('https://evil.example/x'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl('ftp://h/x'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(''), /refused/);
 });
 
 // ── echo-guard matcher (pure) ─────────────────────────────────────

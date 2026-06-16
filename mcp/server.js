@@ -7,6 +7,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const path = require('path');
 
 const PORT = parseInt(process.env.MCP_PORT || '23375', 10);
 const BEEPER_API = process.env.BEEPER_API || 'http://127.0.0.1:23373';
@@ -67,18 +68,40 @@ const MAX_ASSET_BYTES = envIntNonNeg('BEEPERBOX_MAX_ASSET_BYTES', 8 * 1024 * 102
 // stall the request forever and the buffer can't grow unbounded behind it.
 const ASSET_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_ASSET_TIMEOUT_MS', 30000);
 
-// Attachment src_urls are always Matrix content URLs (mxc:// / localmxc://).
-// The Beeper /v1/assets/serve endpoint ALSO accepts file:// — which, proxied
-// through download_asset, would let any MCP caller read arbitrary local files
-// in the container (env-bearing paths, the sent-ledger, anything the Beeper
-// process can read) and exfiltrate secrets. We refuse anything but mxc://
-// /localmxc:// so the tool can only reach real message attachments, never the
-// local filesystem. Applied to BOTH the caller-supplied src_url and a src_url
-// resolved off a message (a hostile sender could craft a file:// attachment).
+// Real attachment src_urls come in two shapes: remote Matrix content
+// (mxc:// / localmxc://) and, once Beeper has cached the file locally,
+// file:///root/.config/BeeperTexts/media/... — verified against a live account.
+// The Beeper /v1/assets/serve endpoint accepts all three, INCLUDING an
+// arbitrary file:// path. Proxied unguarded, that lets any MCP caller read
+// arbitrary local files (env-bearing paths, the sent-ledger, account secrets)
+// or reach internal hosts via http(s):// (SSRF). So we allow mxc:// / localmxc://
+// outright, allow file:// ONLY when it resolves inside Beeper's media cache, and
+// refuse everything else. The file:// path is decoded and normalized before the
+// prefix check so encoded (%2e/%2f) and ../ traversal can't escape the cache
+// root. Applied to BOTH the caller-supplied src_url and a src_url resolved off a
+// message (a hostile sender could craft a file:// attachment pointing elsewhere).
+const ASSET_FILE_ROOT = (() => {
+  const r = process.env.BEEPERBOX_ASSET_FILE_ROOT || '/root/.config/BeeperTexts/media/';
+  return r.endsWith('/') ? r : r + '/';
+})();
+
+function fileUrlInsideMediaCache(srcURL) {
+  let p;
+  try { p = new URL(srcURL).pathname; } catch { return false; }
+  // Decode percent-encoding (%2e == '.', %2f == '/') so an encoded traversal
+  // can't slip past, then collapse ../ and ./ to the real target path.
+  try { p = decodeURIComponent(p); } catch { return false; }
+  return path.posix.normalize(p).startsWith(ASSET_FILE_ROOT);
+}
+
 function assertServableSrcUrl(srcURL) {
-  if (!/^(?:mxc|localmxc):\/\//i.test(String(srcURL))) {
-    throw rpcError(-32602, 'src_url must be an mxc:// or localmxc:// URL — file:// and other schemes are refused');
+  const s = String(srcURL);
+  if (/^(?:mxc|localmxc):\/\//i.test(s)) return;
+  if (/^file:\/\//i.test(s)) {
+    if (fileUrlInsideMediaCache(s)) return;
+    throw rpcError(-32602, `file:// src_url must resolve inside the Beeper media cache (${ASSET_FILE_ROOT}); other paths are refused`);
   }
+  throw rpcError(-32602, 'src_url must be an mxc://, localmxc://, or Beeper-cache file:// URL — other schemes are refused');
 }
 
 // Strip the port from a Host header value ("127.0.0.1:23375" -> "127.0.0.1",
@@ -275,8 +298,9 @@ async function getAccountMap() {
 // Map Beeper's raw message `attachments[]` into a normalized shape MCP clients
 // can act on. Pure passthrough of the fields that already ride the raw message
 // — no extra fetch. `src_url` is the download reference (an mxc:// / localmxc://
-// Matrix content URL) that download_asset takes. `size` carries the byte length
-// (raw `fileSize`) when present. Returns [] when
+// Matrix content URL, or a file:// URL into Beeper's media cache once the file
+// is downloaded locally) that download_asset takes. `size` carries the byte
+// length (raw `fileSize`) when present. Returns [] when
 // there are no attachments, so the field is always an array.
 function normalizeAttachments(raw) {
   const list = Array.isArray(raw?.attachments) ? raw.attachments : [];
@@ -731,11 +755,11 @@ const TOOLS = [
   },
   {
     name: 'download_asset',
-    description: 'Download the bytes of a message attachment (image, PDF, document, voice note, etc.) and return them base64-encoded. This is the MCP-only way to reach an attachment\'s actual content — use it after read_chat / poll_messages surfaces a message whose `attachments[]` carries a `src_url`. Reference the attachment EITHER by passing its `src_url` directly (the value from a normalized attachment — an mxc:// or localmxc:// URL; other schemes such as file:// are refused), OR by `chat_id` + `message_id` (+ optional `index` to pick one of several attachments), in which case beeperbox resolves the src_url for you and also returns the attachment\'s file_name / mime_type / size. Returns { content_type, bytes, encoding: "base64", data_base64, ... }. Large files are capped (default 8 MiB) to keep the JSON-RPC result bounded — raise BEEPERBOX_MAX_ASSET_BYTES if you need bigger.',
+    description: 'Download the bytes of a message attachment (image, PDF, document, voice note, etc.) and return them base64-encoded. This is the MCP-only way to reach an attachment\'s actual content — use it after read_chat / poll_messages surfaces a message whose `attachments[]` carries a `src_url`. Reference the attachment EITHER by passing its `src_url` directly (the value from a normalized attachment — an mxc:// / localmxc:// URL, or a file:// URL inside Beeper\'s local media cache; arbitrary file:// paths and other schemes are refused), OR by `chat_id` + `message_id` (+ optional `index` to pick one of several attachments), in which case beeperbox resolves the src_url for you and also returns the attachment\'s file_name / mime_type / size. Returns { content_type, bytes, encoding: "base64", data_base64, ... }. Large files are capped (default 8 MiB) to keep the JSON-RPC result bounded — raise BEEPERBOX_MAX_ASSET_BYTES if you need bigger.',
     inputSchema: {
       type: 'object',
       properties: {
-        src_url: { type: 'string', description: 'The attachment\'s `src_url` (an mxc:// or localmxc:// URL) from a normalized Message attachment. file:// and other non-Matrix schemes are refused. Provide this, OR chat_id + message_id.' },
+        src_url: { type: 'string', description: 'The attachment\'s `src_url` from a normalized Message attachment — an mxc:// / localmxc:// URL or a file:// URL inside Beeper\'s media cache. Arbitrary file:// paths and other schemes are refused. Provide this, OR chat_id + message_id.' },
         chat_id: { type: 'string', description: 'The chat containing the message. Required if src_url is omitted (used with message_id to resolve the attachment).' },
         message_id: { type: 'string', description: 'The message whose attachment to download. Required if src_url is omitted.' },
         index: { type: 'integer', description: 'Which attachment to download when resolving by message_id and the message has more than one (default 0).', default: 0, minimum: 0 },
