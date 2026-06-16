@@ -237,6 +237,7 @@ Download a message attachment's bytes and return them base64-encoded — the MCP
 **Arguments:** `{src_url?: string}` **or** `{chat_id: string, message_id: string, index?: number = 0}`.
 **Returns:** `{src_url, content_type, bytes, encoding: "base64", data_base64, file_name?, mime_type?, size?}`.
 **Note:** The bytes ride base64 inside the JSON-RPC result, so the asset is capped at `BEEPERBOX_MAX_ASSET_BYTES` (default 8 MiB) — an oversized file returns a clear error, not a truncated body. Internally proxies `GET /v1/assets/serve?url=…`, so a remote deployment publishing only `:23375` can still read attachments. Raise the cap or hit `serve` directly for larger files.
+**Security:** `src_url` is confined to real attachments — `mxc://` / `localmxc://`, or a `file://` URL inside Beeper's media cache (`BEEPERBOX_ASSET_FILE_ROOT`, default `/root/.config/BeeperTexts/media/`); any other path, scheme, URL host, or encoded-`../` traversal is refused before the fetch. This is defense-in-depth — Beeper's own `serve` independently `403`s/`400`s those — so a caller can't turn `download_asset` into an arbitrary-file reader even if the upstream guard regresses.
 
 ## Schemas
 

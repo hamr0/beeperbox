@@ -180,6 +180,10 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 - **Privilege-escalation hardening** — `security_opt: [no-new-privileges:true]`, shrinking the blast radius of Beeper running as root with `--no-sandbox`.
 - **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; default stays rolling auto-update.
 
+**Unreleased hardening** — alongside `download_asset` (see CHANGELOG):
+
+- **`download_asset` src_url confinement (defense-in-depth)** — the tool proxies Beeper's `serve` endpoint, which accepts `file://` paths. Beeper independently restricts these (`403` outside its media dir, `400` for a non-`mxc`/`localmxc`/`file` scheme — confirmed live), but `download_asset` is the network-reachable MCP surface and does not rely on that undocumented upstream guard: it allows `mxc://` / `localmxc://`, allows `file://` only inside the media cache (`BEEPERBOX_ASSET_FILE_ROOT`), and refuses any other path, scheme, URL host, or encoded-`../` traversal **before** the fetch — for both a caller-supplied and a message-resolved `src_url`. Not a patched live exploit; a second in-repo boundary that survives an upstream regression.
+
 **Load-bearing decisions (do not relitigate without changing this doc):**
 
 - **In-container listeners bind `0.0.0.0` on purpose.** A loopback bind inside the container is unreachable through a Docker published port. The defense is auth + Host/Origin + the loopback *publish*, not the bind address. (A "bind loopback" fix was proposed, tested, and rejected because it silently breaks the published port.)
