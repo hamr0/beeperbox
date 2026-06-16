@@ -12,6 +12,12 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+### Documentation
+
+- **README rewrite to reflect v0.6 → v0.8.** The root README was restructured onto the shared `bare`-ecosystem skeleton and brought current with the last three releases. The lead now names both run modes (Docker *and* `npx`), a **Two ways to run** table up top contrasts Container vs Lite (where Beeper lives, deps, start command, first-run login) and states the same-single-file version-parity guarantee, and `Quick start` / `Lite mode` are retitled **Quick start (container)** / **Lite mode (`npx`)** with the now-redundant inline comparison table dropped. New **The MCP** section — the "what's inside" map — documents all 12 verbs grouped Read/triage · Write/act · Watch/reach, surfacing the previously undocumented `poll_messages` watch primitive + restart-safe cursor + `source` echo-guard (0.6.0) and `attachments[]` + `download_asset` byte reach (0.7.0). Stale `BEEPERBOX_IMAGE_TAG=0.7.0` pin example bumped to `0.8.0`. The npm-page `mcp/README.md` is deliberately kept as a focused lite-mode landing page (not a copy of the full README); its two cross-links were repointed to the renamed anchors (`#quick-start-container`, `#lite-mode-npx`).
+
 ## [0.8.0] — 2026-06-16 `[MINOR]`
 
 **Lite mode** — a first-class, supported way to run beeperbox's MCP verb server standalone against a Beeper Desktop the user already runs locally (no Docker, no Electron, no Xvfb). Driven by [multis](https://github.com/hamr0/multis), beeperbox's first consumer: laptop users with Beeper already open get the verbs without the whole container, while the container stays the answer for always-on/VPS. Same single `mcp/server.js` either way, so the tool surface and `serverInfo.version` are identical by construction — lite mode is the *packaging*, not a fork. MINOR per the versioning policy (new runtime behavior — a boot preflight + new distribution mode), and it carries one bug fix that also mattered to the container. Validated live: the full send → restart → poll round-trip echo-guard persistence was proven against a real Beeper account running on the host.

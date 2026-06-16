@@ -4,7 +4,7 @@
 
 This is the *lite* half of [beeperbox](https://github.com/hamr0/beeperbox). The full project ships a Docker image with a headless Beeper Desktop inside; lite mode is the same single-file, zero-dependency MCP server pointed at a Beeper Desktop **you** run on your laptop. Identical verb surface, identical version — you just supply Beeper.
 
-- **Always-on / VPS / no local Beeper?** Use the [Docker image](https://github.com/hamr0/beeperbox#quick-start).
+- **Always-on / VPS / no local Beeper?** Use the [Docker image](https://github.com/hamr0/beeperbox#quick-start-container).
 - **Beeper already open on your machine?** Use this.
 
 ## Prerequisites
@@ -45,6 +45,6 @@ The server binds **loopback only** (`127.0.0.1`) by default, so it's safe with n
 
 There's no Docker restart policy in lite mode. For an always-on setup, run it under `systemd` or `pm2`.
 
-See the [full README](https://github.com/hamr0/beeperbox#lite-mode) and [docs/GUIDE.md](https://github.com/hamr0/beeperbox/blob/master/docs/GUIDE.md) for the complete tool reference and the container build.
+See the [full README](https://github.com/hamr0/beeperbox#lite-mode-npx) and [docs/GUIDE.md](https://github.com/hamr0/beeperbox/blob/master/docs/GUIDE.md) for the complete tool reference and the container build.
 
 [Apache-2.0](https://github.com/hamr0/beeperbox/blob/master/LICENSE)

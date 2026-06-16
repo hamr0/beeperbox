@@ -14,11 +14,25 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
 </p>
 
-**One Docker container that plugs your AI agent into 50+ messengers through a single MCP endpoint.**
+**Plug your AI agent into 50+ messengers through a single MCP endpoint — in Docker, or as a one-line `npx`.**
 
 WhatsApp, iMessage, Signal, Telegram, Discord, Slack, Messenger, Instagram, LinkedIn, Google Messages, Matrix — everything [Beeper](https://www.beeper.com/) bridges, reachable from one HTTP or MCP endpoint instead of 50 per-platform SDKs, OAuth dances, and rate-limit quirks. If you only need Telegram, this is overkill — use [openclaw](https://github.com/openclaw/openclaw) or any BotFather library. If you need reach across many networks from one agent, keep reading.
 
-## Quick start
+## Two ways to run
+
+Same MCP server, same 12 tools, same `serverInfo.version` — by construction, because both modes run the [same single file](mcp/server.js). Pick by where Beeper lives:
+
+| | **Container** | **Lite** (`npx`) |
+|---|---|---|
+| Beeper Desktop | bundled, headless, in Docker | **you** supply it (already open on your machine) |
+| Needs | Docker + compose | just Node 18+ |
+| Start | `docker compose up -d` | `npx beeperbox` |
+| Best for | always-on, VPS, headless | laptop users with Beeper already running |
+| First-run login | noVNC at `:6080` | already done in your local Beeper |
+
+The container is the full appliance (headless Beeper + raw API + MCP). Lite mode is **just the MCP verb layer** pointed at a Beeper you already run — no Docker, no Electron, no Xvfb. New in [v0.8.0](CHANGELOG.md).
+
+## Quick start (container)
 
 Prereqs: Docker + compose plugin, ~1 GB disk, ~600 MB RAM, a Beeper account.
 
@@ -29,7 +43,7 @@ curl -LO https://raw.githubusercontent.com/hamr0/beeperbox/master/docker-compose
 docker compose up -d
 ```
 
-Pulls the pre-built multi-arch image (`ghcr.io/hamr0/beeperbox:latest`, `linux/amd64` + `linux/arm64`). No clone, no build. Pin a version with `BEEPERBOX_IMAGE_TAG=0.7.0 docker compose up -d`, or track master with `:edge` (may break).
+Pulls the pre-built multi-arch image (`ghcr.io/hamr0/beeperbox:latest`, `linux/amd64` + `linux/arm64`). No clone, no build. Pin a version with `BEEPERBOX_IMAGE_TAG=0.8.0 docker compose up -d`, or track master with `:edge` (may break).
 
 **2. Log in once**
 
@@ -68,15 +82,7 @@ Done.
 
 All three are env-overridable (`BEEPERBOX_NOVNC_PORT`, `BEEPERBOX_HOST_PORT`, `BEEPERBOX_MCP_PORT`) so you can run multiple instances on one VPS. For remote access use SSH tunnel, Tailscale, or a TLS reverse proxy — never drop the `127.0.0.1` prefix.
 
-## Lite mode
-
-Two ways to run beeperbox, same verb layer:
-
-| | **Container** (above) | **Lite mode** |
-|---|---|---|
-| Beeper Desktop | bundled, headless, in Docker | **you** supply it (already open on your machine) |
-| Needs | Docker | just Node 18+ |
-| Best for | always-on, VPS, headless | laptop users with Beeper already running |
+## Lite mode (`npx`)
 
 Lite mode runs only the MCP verb server against a Beeper Desktop you already run locally — no Docker, no Electron, no Xvfb. It's the same single file the container runs, so the tool surface and `serverInfo.version` are identical by construction.
 
@@ -116,6 +122,39 @@ BEEPER_TOKEN=your-token-here npx beeperbox --stdio
 **Supervision:** no Docker restart policy here — for an always-on lite setup, run it under `systemd` or `pm2`.
 
 **What lite mode is *not*:** it does not bundle or headless-run Beeper (that's the container's job). No new verbs, no transport changes — it's the same server, packaged and safe to run standalone.
+
+## The MCP
+
+Not a thin proxy over Beeper's raw API — an **opinionated 12-tool verb layer** built for an LLM to drive. Every tool returns one normalized `Chat` / `Message` schema (so the agent never learns a second shape), propagates `chat_id` + `network` onto every message (no second lookup to know where a hit came from), and is documented in-schema for the model. Reach across all 50+ networks; the agent never knows which bridge it's talking to.
+
+**Read / triage**
+
+| Tool | What it does |
+|---|---|
+| `list_accounts` | Which networks are connected (WhatsApp, Telegram, Discord …) — slug + label + display name |
+| `list_inbox` | Most recently active chats, with unread counts and last-activity time |
+| `list_unread` | The "what needs me right now?" view — only chats with `unread_count > 0` |
+| `get_chat` | One chat's current metadata by ID |
+| `read_chat` | Recent messages of a chat, chronological, normalized |
+| `search_messages` | Full-text search across every chat |
+
+**Write / act**
+
+| Tool | What it does |
+|---|---|
+| `send_message` | The headline write — reply or initiate; markdown, `reply_to_message_id`, returns the new message ID |
+| `note_to_self` | The agent's private command/control channel — recorded, excluded from every inbox view |
+| `react_to_message` | Lightest "I saw it" — a unicode emoji, visible to the sender on every network |
+| `archive_chat` | The "done with this conversation" primitive (Beeper exposes no mark-as-read) |
+
+**Watch / reach** — the last two releases
+
+| Tool | What it does |
+|---|---|
+| `poll_messages` | Read-only **watch primitive**: "what arrived since this cursor?" Seed once, persist the opaque cursor, poll with zero side effects. The cursor is **restart-safe** — survives a container/process restart with no missed or duplicated messages. Each message carries a `source` field (`"api"` for beeperbox's own sends, `"external"` otherwise) so a poll loop never answers itself. *(v0.6.0)* |
+| `download_asset` | The MCP-only way to reach attachment **bytes** (base64). Every `Message` now carries `attachments[]` (`{type, file_name, mime_type, src_url, size, is_voice_note}`); fetch by `src_url` or by `chat_id`+`message_id`. Byte-capped and timeout-bounded; a defense-in-depth guard refuses `file://` paths outside Beeper's media cache. *(v0.7.0)* |
+
+Reliable echo-suppression (`source` + the optional `client_tag` idempotency tag) means an agent on a poll loop can send *and* watch the same chat without mistaking its own messages for inbound — the wiring that lets [multis](https://github.com/hamr0/multis) drop its text-prefix hacks.
 
 ## Build from source
 
