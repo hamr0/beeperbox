@@ -9,6 +9,14 @@ ENV DISPLAY=:99
 # MCP server is started via `node` directly (e.g. the CI guard-check), not only
 # through entrypoint.sh.
 ENV MCP_BIND_ADDR=0.0.0.0
+# Disable the startup preflight in the container. Preflight is the LITE-mode boot
+# sanity check (lite mode has no healthcheck); the container has a Docker
+# HEALTHCHECK + a beepertexts supervisor + the entrypoint's own API-wait loop, so
+# it's redundant here. Worse, the entrypoint starts the MCP server BEFORE the API
+# is ready (and before first-run login), so a one-shot preflight would log a
+# misleading "FAIL: unreachable" on every boot. Lite mode (npx, without this ENV)
+# still runs it.
+ENV BEEPERBOX_PREFLIGHT=0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
