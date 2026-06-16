@@ -68,6 +68,54 @@ Done.
 
 All three are env-overridable (`BEEPERBOX_NOVNC_PORT`, `BEEPERBOX_HOST_PORT`, `BEEPERBOX_MCP_PORT`) so you can run multiple instances on one VPS. For remote access use SSH tunnel, Tailscale, or a TLS reverse proxy — never drop the `127.0.0.1` prefix.
 
+## Lite mode
+
+Two ways to run beeperbox, same verb layer:
+
+| | **Container** (above) | **Lite mode** |
+|---|---|---|
+| Beeper Desktop | bundled, headless, in Docker | **you** supply it (already open on your machine) |
+| Needs | Docker | just Node 18+ |
+| Best for | always-on, VPS, headless | laptop users with Beeper already running |
+
+Lite mode runs only the MCP verb server against a Beeper Desktop you already run locally — no Docker, no Electron, no Xvfb. It's the same single file the container runs, so the tool surface and `serverInfo.version` are identical by construction.
+
+**Prereqs:** Beeper Desktop running locally, with the Developer API enabled — **Settings → Developers** → enable the API and create an access token (the same token the container uses).
+
+**Run it:**
+
+```sh
+BEEPER_TOKEN=your-token-here npx beeperbox
+```
+
+MCP HTTP server comes up on `http://127.0.0.1:23375`, pointed at the local Beeper API on `http://127.0.0.1:23373`. On boot it logs a one-line reachability verdict so a bad token or unreachable API is obvious immediately:
+
+```
+[beeperbox-mcp] preflight OK: http://127.0.0.1:23373 reachable, token accepted, 4 account(s)
+```
+
+For stdio transport (Claude Code, Cursor, Cline, Continue, bareagent), add `--stdio`:
+
+```sh
+BEEPER_TOKEN=your-token-here npx beeperbox --stdio
+```
+
+**Env contract:**
+
+| Env | Meaning | Default |
+|---|---|---|
+| `BEEPER_API` | Local Beeper Desktop API base | `http://127.0.0.1:23373` |
+| `BEEPER_TOKEN` | Beeper dev token (Settings → Developers) | — (required) |
+| `MCP_PORT` | MCP HTTP port | `23375` |
+| `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
+| `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
+
+**Security:** the server is safe loopback-only (`127.0.0.1`, no auth). To expose it beyond your machine, set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface. Same posture as the container's `:23375`.
+
+**Supervision:** no Docker restart policy here — for an always-on lite setup, run it under `systemd` or `pm2`.
+
+**What lite mode is *not*:** it does not bundle or headless-run Beeper (that's the container's job). No new verbs, no transport changes — it's the same server, packaged and safe to run standalone.
+
 ## Build from source
 
 Only if you're hacking on the image itself or running air-gapped:

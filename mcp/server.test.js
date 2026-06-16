@@ -400,6 +400,68 @@ test('recordSent caps an oversized client_tag (ledger-bloat guard)', () => {
   }
 });
 
+// ── lite/container parity (gap 6) ─────────────────────────────────
+// Lite mode and the Docker build run THIS same file, so the only way they can
+// diverge is the version string or the tool set. Pin both to a single source.
+test('serverInfo version is single-sourced from package.json (no drift)', () => {
+  const pkg = require('./package.json');
+  assert.equal(S.VERSION, pkg.version);
+});
+
+test('the tool registry is exactly the 12 documented verbs', () => {
+  const expected = [
+    'list_accounts', 'list_inbox', 'list_unread', 'get_chat', 'read_chat',
+    'search_messages', 'send_message', 'note_to_self', 'react_to_message',
+    'archive_chat', 'poll_messages', 'download_asset',
+  ].sort();
+  assert.deepEqual([...S.TOOL_NAMES].sort(), expected);
+});
+
+// ── ledgerPath: per-user default, not /root (gap 2) ───────────────
+// The container-only /root default silently failed to persist on any normal
+// host. The default must now be a writable per-user XDG path, with the env
+// override still winning.
+test('ledgerPath: XDG default, homedir fallback, and explicit override', () => {
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  const origLedger = process.env.BEEPERBOX_SENT_LEDGER;
+  try {
+    delete process.env.BEEPERBOX_SENT_LEDGER;
+
+    // XDG_CONFIG_HOME honored when set.
+    process.env.XDG_CONFIG_HOME = '/tmp/xdg-test';
+    assert.equal(S.ledgerPath(), path.join('/tmp/xdg-test', 'beeperbox', 'sent-ledger.json'));
+
+    // Without XDG → ~/.config/beeperbox/sent-ledger.json (per-user, never a bare
+    // hardcoded /root on a non-root host).
+    delete process.env.XDG_CONFIG_HOME;
+    assert.equal(S.ledgerPath(), path.join(os.homedir(), '.config', 'beeperbox', 'sent-ledger.json'));
+
+    // Explicit override always wins.
+    process.env.BEEPERBOX_SENT_LEDGER = '/tmp/custom-ledger.json';
+    assert.equal(S.ledgerPath(), '/tmp/custom-ledger.json');
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = origXdg;
+    if (origLedger === undefined) delete process.env.BEEPERBOX_SENT_LEDGER; else process.env.BEEPERBOX_SENT_LEDGER = origLedger;
+  }
+});
+
+test('persistLedger creates the parent dir on a fresh host (no pre-existing config dir)', () => {
+  const dir = path.join(os.tmpdir(), `bb-mkdir-test-${process.pid}`, 'nested', 'beeperbox');
+  const file = path.join(dir, 'sent-ledger.json');
+  try { fs.rmSync(path.join(os.tmpdir(), `bb-mkdir-test-${process.pid}`), { recursive: true, force: true }); } catch { /* not there */ }
+  process.env.BEEPERBOX_SENT_LEDGER = file;
+  try {
+    S._resetLedger();
+    assert.ok(!fs.existsSync(dir), 'precondition: dir does not exist yet');
+    S.recordSent({ chat_id: 'c1', sent_id: 'p1', text: 'hi', client_tag: null });
+    assert.ok(fs.existsSync(file), 'ledger persisted into a freshly-created dir');
+  } finally {
+    try { fs.rmSync(path.join(os.tmpdir(), `bb-mkdir-test-${process.pid}`), { recursive: true, force: true }); } catch { /* ignore */ }
+    delete process.env.BEEPERBOX_SENT_LEDGER;
+    S._resetLedger();
+  }
+});
+
 // ── ledger persistence round-trip (real temp file) ────────────────
 test('recordSent persists and loadLedger restores across a "restart"', () => {
   const file = path.join(os.tmpdir(), `bb-ledger-test-${process.pid}.json`);

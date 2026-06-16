@@ -1,0 +1,41 @@
+{
+  "name": "beeperbox",
+  "version": "0.7.0",
+  "description": "Lite mode for beeperbox — the opinionated MCP verb server for Beeper Desktop, run standalone against a Beeper you already have open (no Docker, no Electron). The full headless-Beeper-in-Docker build lives at github.com/hamr0/beeperbox.",
+  "bin": {
+    "beeperbox": "server.js"
+  },
+  "main": "server.js",
+  "type": "commonjs",
+  "files": [
+    "server.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test server.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "beeper",
+    "messaging",
+    "whatsapp",
+    "imessage",
+    "telegram",
+    "signal",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamr0/beeperbox.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://github.com/hamr0/beeperbox#lite-mode",
+  "bugs": "https://github.com/hamr0/beeperbox/issues",
+  "author": "hamr0",
+  "license": "Apache-2.0"
+}

@@ -14,14 +14,15 @@ This is the long-form walkthrough. For a quick pitch, see the [README](../README
 8. [Verify the API works](#verify-the-api-works)
 9. [Use it — real examples](#use-it--real-examples)
 10. [MCP tools reference](#mcp-tools-reference)
-11. [Deploy to a VPS](#deploy-to-a-vps)
-12. [Running multiple instances on one VPS](#running-multiple-instances-on-one-vps)
-13. [Operating it](#operating-it)
-14. [Ports](#ports)
-15. [Upgrading](#upgrading)
-16. [Troubleshooting](#troubleshooting)
-17. [Security notes](#security-notes)
-18. [Limits and caveats](#limits-and-caveats)
+11. [Lite mode (run without Docker)](#lite-mode-run-without-docker)
+12. [Deploy to a VPS](#deploy-to-a-vps)
+13. [Running multiple instances on one VPS](#running-multiple-instances-on-one-vps)
+14. [Operating it](#operating-it)
+15. [Ports](#ports)
+16. [Upgrading](#upgrading)
+17. [Troubleshooting](#troubleshooting)
+18. [Security notes](#security-notes)
+19. [Limits and caveats](#limits-and-caveats)
 
 ---
 
@@ -43,13 +44,15 @@ Concretely:
 - Headless servers that need to send alerts to humans on whichever messenger they prefer
 - Anything in a container, on a Raspberry Pi, in CI, on a remote box where you cannot keep a Desktop GUI session running
 
-If you are a **laptop user** with Beeper Desktop installed locally, you do not need beeperbox. Beeper already provides:
+If you are a **laptop user** with Beeper Desktop installed locally, you do not need the **container** — Beeper already provides:
 
 - A native HTTP API on `localhost:23373` (the same one beeperbox exposes inside the container)
 - A built-in MCP server for AI agent runtimes like Claude Desktop and Claude Code
 - A real GUI you can interact with directly
 
-beeperbox is the same machinery, packaged for environments where running Beeper Desktop on the host is not an option.
+The container is the same machinery, packaged for environments where running Beeper Desktop on the host is not an option.
+
+**One exception — lite mode.** If Beeper Desktop is already open on your machine *and* you specifically want beeperbox's opinionated 12-tool surface (the normalized schemas, the `source` echo-guard, the `poll_messages` watch primitive) instead of Beeper's raw API, run `npx beeperbox` — the same verb server, standalone, no container. See [Lite mode (run without Docker)](#lite-mode-run-without-docker).
 
 It is **not** a bot framework, **not** an agent runtime, and **not** a general-purpose messaging gateway. It is the messaging substrate other software plugs into.
 
@@ -617,6 +620,62 @@ curl -s -X POST http://localhost:23375 \
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | docker exec -i beeperbox node /opt/mcp/server.js --stdio
 ```
+
+---
+
+## Lite mode (run without Docker)
+
+Everything above runs Beeper Desktop **inside** the container. **Lite mode** is the other way to run beeperbox: only the MCP verb server, pointed at a Beeper Desktop **you already run** on your own machine — no Docker, no Electron, no Xvfb. It's the exact same `mcp/server.js` the container runs (identical 12 tools, identical version), just packaged as an npm bin.
+
+Use lite mode when Beeper Desktop is already open on the machine and you want beeperbox's verb surface without the container. Use the container when there's no human/desktop in the loop (always-on, VPS, headless).
+
+**Prereqs:** Beeper Desktop running locally, with the Developer API enabled and a token — the same [Create an access token](#create-an-access-token) steps as the container (Settings → Developers → enable the API → create a token).
+
+**Run it:**
+
+```sh
+# HTTP transport — MCP on http://127.0.0.1:23375, pointed at the local Beeper API on :23373
+BEEPER_TOKEN=your-token-here npx beeperbox
+
+# stdio transport (Claude Code, Cursor, Cline, Continue, bareagent)
+BEEPER_TOKEN=your-token-here npx beeperbox --stdio
+```
+
+On boot it logs a one-line reachability verdict so a bad token or unreachable Beeper is obvious immediately, instead of surfacing at the first tool call:
+
+```
+[beeperbox-mcp] preflight OK: http://127.0.0.1:23373 reachable, token accepted, 4 account(s)
+```
+
+**Wiring an MCP client to lite mode** (e.g. `~/.claude/mcp.json` for Claude Code) — point it at the bin instead of `docker exec`:
+
+```json
+{
+  "mcpServers": {
+    "beeperbox": {
+      "command": "npx",
+      "args": ["beeperbox", "--stdio"],
+      "env": { "BEEPER_TOKEN": "your-token-here" }
+    }
+  }
+}
+```
+
+**Env contract** (all optional except `BEEPER_TOKEN`):
+
+| Env | Meaning | Default |
+|---|---|---|
+| `BEEPER_API` | Local Beeper Desktop API base | `http://127.0.0.1:23373` |
+| `BEEPER_TOKEN` | Beeper dev token (Settings → Developers) | — (required) |
+| `MCP_PORT` | MCP HTTP port | `23375` |
+| `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
+| `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
+
+**Security** is the same posture as the container's `:23375`: safe loopback-only with no auth. To expose it beyond your machine, set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface.
+
+**Supervision:** there's no Docker `restart: unless-stopped` here. For an always-on lite setup, run it under `systemd` or `pm2`.
+
+**What lite mode is *not*:** it does not bundle or headless-run Beeper Desktop — that's the container's job. No new verbs, no transport changes. It's the same server, packaged to run standalone.
 
 ---
 
