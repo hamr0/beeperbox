@@ -69,28 +69,41 @@ const MAX_ASSET_BYTES = envIntNonNeg('BEEPERBOX_MAX_ASSET_BYTES', 8 * 1024 * 102
 const ASSET_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_ASSET_TIMEOUT_MS', 30000);
 
 // Real attachment src_urls come in two shapes: remote Matrix content
-// (mxc:// / localmxc://) and, once Beeper has cached the file locally,
+// (mxc:// / localmxc://) and, once Beeper caches the file locally,
 // file:///root/.config/BeeperTexts/media/... — verified against a live account.
-// The Beeper /v1/assets/serve endpoint accepts all three, INCLUDING an
-// arbitrary file:// path. Proxied unguarded, that lets any MCP caller read
-// arbitrary local files (env-bearing paths, the sent-ledger, account secrets)
-// or reach internal hosts via http(s):// (SSRF). So we allow mxc:// / localmxc://
-// outright, allow file:// ONLY when it resolves inside Beeper's media cache, and
-// refuse everything else. The file:// path is decoded and normalized before the
-// prefix check so encoded (%2e/%2f) and ../ traversal can't escape the cache
-// root. Applied to BOTH the caller-supplied src_url and a src_url resolved off a
-// message (a hostile sender could craft a file:// attachment pointing elsewhere).
+// Beeper's own /v1/assets/serve already guards this (it 403s a file:// outside
+// its media dir and 400s a non-mxc/localmxc/file scheme — observed live). We do
+// NOT lean on that undocumented upstream behavior: download_asset is the
+// network-reachable MCP surface, so it independently allows mxc:// / localmxc://,
+// allows file:// ONLY when it resolves inside the media cache, and refuses
+// everything else BEFORE the fetch — defense in depth, plus a clear error
+// instead of a raw Beeper 4xx. The file:// path is decoded + normalized and any
+// authority/host or double-encoded dot/slash refused, so a caller can't smuggle
+// ../ or a UNC host past the prefix check. Applied to BOTH the caller-supplied
+// src_url and a src_url resolved off a message (a hostile sender could craft a
+// file:// attachment pointing elsewhere).
 const ASSET_FILE_ROOT = (() => {
   const r = process.env.BEEPERBOX_ASSET_FILE_ROOT || '/root/.config/BeeperTexts/media/';
   return r.endsWith('/') ? r : r + '/';
 })();
 
 function fileUrlInsideMediaCache(srcURL) {
+  let u;
+  try { u = new URL(srcURL); } catch { return false; }
+  // A file:// authority/host (file://host/path) is a network/UNC semantic the
+  // pathname check would miss — and we forward the ORIGINAL url, host and all.
+  // Legit local attachments have no host (file:///… ; even file://localhost
+  // normalizes the host away), so refuse any non-empty host.
+  if (u.host) return false;
   let p;
-  try { p = new URL(srcURL).pathname; } catch { return false; }
-  // Decode percent-encoding (%2e == '.', %2f == '/') so an encoded traversal
-  // can't slip past, then collapse ../ and ./ to the real target path.
-  try { p = decodeURIComponent(p); } catch { return false; }
+  try { p = decodeURIComponent(u.pathname); } catch { return false; }
+  // One decode matches Beeper serve's own single-decode (observed: it 404s a
+  // double-encoded path as a literal, never re-decodes). Any %2e/%2f still
+  // present after that decode is a DOUBLE-encoded dot/slash — an attempt to
+  // smuggle ../ past normalize() — so refuse rather than forward it. (A plain
+  // literal %25 in a real filename decodes to a bare % here, not %2e/%2f, so
+  // this doesn't over-reject normal names.)
+  if (/%2[ef]/i.test(p)) return false;
   return path.posix.normalize(p).startsWith(ASSET_FILE_ROOT);
 }
 
@@ -1014,8 +1027,9 @@ async function callTool(name, args) {
         srcURL = att.src_url;
         meta = { file_name: att.file_name, mime_type: att.mime_type, size: att.size };
       }
-      // Refuse file:// (and any non-Matrix scheme) BEFORE the fetch — this is
-      // the local-file-read / secret-exfil guard, covering both ref paths.
+      // Confine the src_url to a real attachment (mxc/localmxc, or file:// inside
+      // the media cache) BEFORE the fetch — defense-in-depth over Beeper serve's
+      // own path guard, covering both ref paths. See assertServableSrcUrl.
       assertServableSrcUrl(srcURL);
       // /v1/assets/serve streams the bytes for an mxc:// / localmxc:// URL.
       // beeperFetch raw-mode returns the buffer + content-type, enforces the

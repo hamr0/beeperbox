@@ -243,6 +243,22 @@ test('assertServableSrcUrl: refuses ../ and percent-encoded traversal out of the
   assert.throws(() => S.assertServableSrcUrl(MEDIA + '%2e%2e/%2e%2e/beeperbox-sent-ledger.json'), /refused/);
 });
 
+test('assertServableSrcUrl: refuses DOUBLE-encoded traversal (%252e) without re-decoding it open', () => {
+  // %252e -> one decode -> %2e (a literal dot-encoding). The guard refuses any
+  // residual %2e/%2f after a single decode rather than forwarding it — serve
+  // single-decodes too, so this never reaches the filesystem either way.
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + '%252e%252e/%252e%252e/etc/passwd'), /refused/);
+  assert.throws(() => S.assertServableSrcUrl(MEDIA + 'a%252fb'), /refused/);
+});
+
+test('assertServableSrcUrl: refuses a file:// URL with a non-empty host (authority is forwarded, not path-checked)', () => {
+  // file://attacker/<media-path> has a valid-looking pathname but a host the
+  // pathname check would miss; the original url (host and all) is what we
+  // forward, so reject any authority. file://localhost/… is fine (host empties).
+  assert.throws(() => S.assertServableSrcUrl('file://attacker/root/.config/BeeperTexts/media/x'), /refused/);
+  assert.doesNotThrow(() => S.assertServableSrcUrl('file://localhost/root/.config/BeeperTexts/media/x'));
+});
+
 test('assertServableSrcUrl: refuses http(s):// (SSRF) and other non-Matrix schemes', () => {
   assert.throws(() => S.assertServableSrcUrl('http://169.254.169.254/latest/meta-data/'), /refused/);
   assert.throws(() => S.assertServableSrcUrl('https://evil.example/x'), /refused/);

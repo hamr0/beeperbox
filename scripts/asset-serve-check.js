@@ -114,10 +114,11 @@ beeper.listen(0, '127.0.0.1', () => {
     check(/requires src_url/.test(e3.error?.message || ''), 'missing ref errors clearly');
 
     // ── SECURITY: file:// outside Beeper's media cache (and non-Matrix schemes)
-    // must be refused BEFORE the serve fetch — else an MCP caller reads arbitrary
-    // local files. The refusal message is distinct from any serve-path error,
-    // proving the fetch never ran. file:// INSIDE the cache is the real cached-
-    // attachment case and must still download (verified live).
+    // must be refused BEFORE the serve fetch. This is download_asset's own
+    // confinement — Beeper's serve endpoint independently 403s/400s these too,
+    // but we don't rely on that undocumented upstream guard. The refusal message
+    // is distinct from any serve-path error, proving the fetch never ran. file://
+    // INSIDE the cache is the real cached-attachment case and must still download.
     const s1 = await rpc(mcpPort, { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file:///etc/passwd' } } });
     check(/refused/.test(s1.error?.message || ''), `file:///etc/passwd is REFUSED (local-file-read guard): ${s1.error?.message || 'NO ERROR'}`);
     const s2 = await rpc(mcpPort, { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'http://169.254.169.254/latest/meta-data/' } } });
@@ -128,6 +129,10 @@ beeper.listen(0, '127.0.0.1', () => {
     check(!s4.__error, 'file:// INSIDE the media cache (the real cached-attachment case) still downloads');
     const s5 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'localmxc://h/cached' } } }));
     check(!s5.__error, 'localmxc:// is still allowed');
+    const s6 = await rpc(mcpPort, { jsonrpc: '2.0', id: 14, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file:///root/.config/BeeperTexts/media/%252e%252e/%252e%252e/etc/passwd' } } });
+    check(/refused/.test(s6.error?.message || ''), 'double-encoded (%252e) traversal is refused at the guard');
+    const s7 = await rpc(mcpPort, { jsonrpc: '2.0', id: 15, method: 'tools/call', params: { name: 'download_asset', arguments: { src_url: 'file://attacker/root/.config/BeeperTexts/media/x' } } });
+    check(/refused/.test(s7.error?.message || ''), 'file:// with a non-empty host is refused at the guard');
 
     // ── attachments[] surfaced on a normalized read (via the message endpoint shape) ──
     const d3 = parse(await rpc(mcpPort, { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'download_asset', arguments: { chat_id: 'c1', message_id: 'm1' } } }));
