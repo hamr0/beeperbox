@@ -95,6 +95,21 @@ const ASSET_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_ASSET_TIMEOUT_MS', 30000);
 // neither, so this is its boot sanity check. Opt out with BEEPERBOX_PREFLIGHT=0.
 const PREFLIGHT_TIMEOUT_MS = envIntNonNeg('BEEPERBOX_PREFLIGHT_TIMEOUT_MS', 5000);
 
+// The accountID -> network map is cached so chat normalizers don't re-fetch
+// /v1/accounts on every call. But an UNBOUNDED cache is a resilience bug: an
+// account added at runtime (e.g. WhatsApp via noVNC) would render network
+// "unknown" in every chat verb until the MCP *process* restarts, and an empty/
+// partial map captured during the backend's post-restart sync window would
+// freeze for the whole process life — so a plain `docker restart` re-poisons it
+// from a still-syncing backend and the account list stays wrong (the exact wedge
+// multis reported). Bound it with a TTL, and never cache an EMPTY result. Set to
+// 0 to disable caching (always read live).
+const ACCOUNT_CACHE_TTL_MS = envIntNonNeg('BEEPERBOX_ACCOUNT_CACHE_TTL_MS', 60000);
+
+// Injectable clock — overridable in tests so the TTL is verifiable without a
+// real sleep. Production reads the wall clock.
+let nowFn = () => Date.now();
+
 // Real attachment src_urls come in two shapes: remote Matrix content
 // (mxc:// / localmxc://) and, once Beeper caches the file locally,
 // file:///root/.config/BeeperTexts/media/... — verified against a live account.
@@ -293,17 +308,59 @@ async function getNoteToSelfChatID() {
   throw rpcError(-32002, 'note-to-self chat not found in top 100 chats — open Beeper Desktop and verify a "Note to self" chat exists');
 }
 
+// Unwrap /v1/accounts into a bare array — Beeper returns a bare array today, but
+// tolerate a {items:[...]} envelope. One place so list_accounts, getAccountMap,
+// and preflight agree.
+function accountList(accounts) {
+  return Array.isArray(accounts) ? accounts : (accounts?.items || []);
+}
+
+// accountCache: { map, at } | null. Bounded by ACCOUNT_CACHE_TTL_MS and NEVER
+// populated from an empty result — see ACCOUNT_CACHE_TTL_MS above for why the old
+// unbounded cache wedged after a runtime account-add / post-restart sync window.
 async function getAccountMap() {
-  if (accountCache) return accountCache;
-  const accounts = await beeperFetch('/v1/accounts');
-  accountCache = {};
-  for (const a of (Array.isArray(accounts) ? accounts : (accounts.items || []))) {
-    accountCache[a.accountID] = {
-      network: networkSlug(a.network),
-      network_label: a.network,
-    };
+  const now = nowFn();
+  const cacheValid =
+    accountCache &&
+    ACCOUNT_CACHE_TTL_MS > 0 &&
+    (now - accountCache.at) < ACCOUNT_CACHE_TTL_MS;
+  if (cacheValid) return accountCache.map;
+
+  const list = accountList(await beeperFetch('/v1/accounts'));
+  const map = {};
+  for (const a of list) {
+    map[a.accountID] = { network: networkSlug(a.network), network_label: a.network };
   }
-  return accountCache;
+  // An empty /v1/accounts is almost always the backend mid-sync (just after a
+  // restart or an account-add), not a real "no accounts" state. Caching it would
+  // freeze every chat verb's network labels until the *process* restarts. Serve
+  // it for THIS call (the verb still returns, just with "unknown" labels) but
+  // leave the cache empty so the very next call re-reads and self-heals the
+  // moment the backend populates. Log it so a recurrence is diagnosable, not silent.
+  if (list.length === 0) {
+    process.stderr.write('[beeperbox-mcp] /v1/accounts returned 0 accounts — Beeper may still be syncing; not caching, will re-read next call\n');
+    accountCache = null;
+    return map;
+  }
+  accountCache = { map, at: now };
+  return map;
+}
+
+// Map one raw /v1/accounts entry into the list_accounts shape. `status` is the
+// backend's per-account connection state ("connected" / "connecting" / …) —
+// surfaced (not dropped) so a caller can tell a still-syncing bridge from a real
+// one instead of reading a transient as "gone".
+function normalizeAccount(a) {
+  return {
+    account_id: a.accountID,
+    network: networkSlug(a.network),
+    network_label: a.network,
+    status: a.status || null,
+    user: {
+      id: a.user?.id || null,
+      display_name: a.user?.fullName || a.user?.displayText || a.user?.username || null,
+    },
+  };
 }
 
 // ─── chat normalizer ──────────────────────────────────────────────
@@ -673,7 +730,7 @@ function applyEchoTags(messages, now) {
 const TOOLS = [
   {
     name: 'list_accounts',
-    description: 'List all messaging accounts (networks) connected to this Beeper account. Each account corresponds to one platform — WhatsApp, Telegram, Discord, etc. Use this to see which platforms are reachable before calling other tools, or to discover what kinds of chats exist. Returns network slug (machine-readable, e.g. "whatsapp"), network label (human, e.g. "WhatsApp"), the underlying account ID, and the user\'s display name on that platform.',
+    description: 'List all messaging accounts (networks) connected to this Beeper account. Each account corresponds to one platform — WhatsApp, Telegram, Discord, etc. Use this to see which platforms are reachable before calling other tools, or to discover what kinds of chats exist. Returns network slug (machine-readable, e.g. "whatsapp"), network label (human, e.g. "WhatsApp"), the underlying account ID, the bridge connection `status` ("connected", "connecting", etc. — lets you tell a still-syncing account from a real one rather than reading a transient as "gone"), and the user\'s display name on that platform.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -827,17 +884,15 @@ const TOOLS = [
 async function callTool(name, args) {
   switch (name) {
     case 'list_accounts': {
-      const accounts = await beeperFetch('/v1/accounts');
-      const list = Array.isArray(accounts) ? accounts : (accounts.items || []);
-      return list.map((a) => ({
-        account_id: a.accountID,
-        network: networkSlug(a.network),
-        network_label: a.network,
-        user: {
-          id: a.user?.id || null,
-          display_name: a.user?.fullName || a.user?.displayText || a.user?.username || null,
-        },
-      }));
+      const list = accountList(await beeperFetch('/v1/accounts'));
+      // A live read, so a 0 here is the backend's current truth — but that is far
+      // more often "Beeper still syncing after a restart/account-add" than a real
+      // empty account set. Log it so the operator can tell the difference instead
+      // of silently relaying an ambiguous empty list.
+      if (list.length === 0) {
+        process.stderr.write('[beeperbox-mcp] list_accounts: backend /v1/accounts returned 0 accounts — Beeper may still be syncing (retry shortly)\n');
+      }
+      return list.map(normalizeAccount);
     }
 
     case 'get_chat': {
@@ -1310,6 +1365,7 @@ module.exports = {
   selectDelivery,
   textHash,
   normalizeAttachments,
+  normalizeAccount,
   assertServableSrcUrl,
   matchSentMessage,
   recordSent,
@@ -1317,4 +1373,8 @@ module.exports = {
   loadLedger,
   // test hook: drop the in-memory ledger so a test can re-load from a fresh path
   _resetLedger: () => { ledger = null; ledgerPersistWarned = false; },
+  // account-map cache surface (resilience): the map + its TTL/empty-cache rules.
+  getAccountMap,
+  _resetAccountCache: () => { accountCache = null; },
+  _setNow: (fn) => { nowFn = fn || (() => Date.now()); },
 };

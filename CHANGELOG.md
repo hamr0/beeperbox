@@ -12,6 +12,24 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+Account-sync resilience + observability — filed by [multis](https://github.com/hamr0/multis) after a WhatsApp account added via noVNC didn't surface, and a plain `docker restart` didn't recover it (it self-corrected only later). MINOR-bound when released: `list_accounts` gains a new `status` schema field (new runtime behavior per the versioning policy).
+
+### Fixed
+
+- **The account map no longer wedges after a runtime account change.** `getAccountMap()` (the `accountID → network` map every chat verb uses for network labels) cached its result for the **whole process lifetime** with no TTL and no invalidation — so an account added at runtime (WhatsApp via noVNC) rendered `network:"unknown"` in `list_inbox` / `list_unread` / `read_chat` / `get_chat` / `search_messages` / `poll_messages` until the MCP **process** restarted. Worse, if the map was first populated during the backend's post-restart **sync window** (when `/v1/accounts` briefly returns empty), it froze that empty map for the whole run — so a plain `docker restart` re-poisoned it from a still-syncing backend and the wedge survived (recovering only on a luckier restart or a full `down`/`up`, exactly the reported symptom). The cache is now bounded by a TTL (`BEEPERBOX_ACCOUNT_CACHE_TTL_MS`, default 60 s) **and an empty result is never cached** — it is served for the one call that saw it but re-read on the next, so the map self-heals the instant Beeper finishes syncing. A runtime account-add is now reflected within the TTL with no restart.
+
+### Added
+
+- **`list_accounts` surfaces the backend connection `status`** per account (`"connected"`, `"connecting"`, …; new schema field). A still-syncing bridge is now distinguishable from a real account, instead of a transient reading as "gone".
+- **Zero-account observability.** When `/v1/accounts` returns an empty list, both `list_accounts` and the internal account-map refresh log a clear stderr line ("Beeper may still be syncing — retry shortly") instead of silently relaying an ambiguous `0`. A recurrence is now self-diagnosing.
+- **`BEEPERBOX_ACCOUNT_CACHE_TTL_MS`** (default `60000`) — TTL on the account-map cache; `0` disables caching (always read `/v1/accounts` live).
+
+### Documentation
+
+- `beeperbox.context.md` and `docs/PRD.md` document the new `status` field, the sync-window/retry guidance, and the `BEEPERBOX_ACCOUNT_CACHE_TTL_MS` tunable.
+
 ## [0.8.1] — 2026-06-17 `[PATCH]`
 
 Documentation only. PATCH per the versioning policy — the MCP tool surface, raw/HTTP API, `Chat`/`Message` schemas, and default ports are bit-identical to v0.8.0, and no client-code edits are required. The headline is that the READMEs are now current with v0.6 → v0.8: the root README gained a **The MCP** map of all 12 verbs (including the previously undocumented `poll_messages` watch primitive and `download_asset` attachment reach), and the npm-page README was reshaped onto the shared `bare`-ecosystem skeleton. This is the first release whose npm tarball carries the reshaped lite-mode README — npm versions are immutable, so the doc refresh ships under a new version by necessity.
