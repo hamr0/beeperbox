@@ -1228,8 +1228,7 @@ async function preflight() {
     return;
   }
   try {
-    const accounts = await beeperFetch('/v1/accounts', { timeoutMs: PREFLIGHT_TIMEOUT_MS });
-    const list = Array.isArray(accounts) ? accounts : (accounts?.items || []);
+    const list = accountList(await beeperFetch('/v1/accounts', { timeoutMs: PREFLIGHT_TIMEOUT_MS }));
     say(`preflight OK: ${BEEPER_API} reachable, token accepted, ${list.length} account(s)`);
   } catch (e) {
     say(`preflight FAIL: ${BEEPER_API} unreachable or token rejected — ${e.message}`);

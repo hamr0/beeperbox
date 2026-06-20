@@ -12,9 +12,9 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
+## [0.9.0] — 2026-06-20 `[MINOR]`
 
-Account-sync resilience + observability — filed by [multis](https://github.com/hamr0/multis) after a WhatsApp account added via noVNC didn't surface, and a plain `docker restart` didn't recover it (it self-corrected only later). MINOR-bound when released: `list_accounts` gains a new `status` schema field (new runtime behavior per the versioning policy).
+Account-sync resilience + observability — filed by [multis](https://github.com/hamr0/multis) after a WhatsApp account added via noVNC didn't surface, and a plain `docker restart` didn't recover it (it self-corrected only later). MINOR per the versioning policy: `list_accounts` gains a new `status` schema field (new runtime behavior). No tool was added or removed — the verb set is still the 12 documented tools; this changes one tool's output shape and the runtime's caching behavior.
 
 ### Fixed
 

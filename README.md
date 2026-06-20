@@ -131,7 +131,7 @@ Not a thin proxy over Beeper's raw API — an **opinionated 12-tool verb layer**
 
 | Tool | What it does |
 |---|---|
-| `list_accounts` | Which networks are connected (WhatsApp, Telegram, Discord …) — slug + label + display name |
+| `list_accounts` | Which networks are connected (WhatsApp, Telegram, Discord …) — slug + label + connection `status` + display name |
 | `list_inbox` | Most recently active chats, with unread counts and last-activity time |
 | `list_unread` | The "what needs me right now?" view — only chats with `unread_count > 0` |
 | `get_chat` | One chat's current metadata by ID |

@@ -1,6 +1,6 @@
 {
   "name": "beeperbox",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Lite mode for beeperbox — the opinionated MCP verb server for Beeper Desktop, run standalone against a Beeper you already have open (no Docker, no Electron). The full headless-Beeper-in-Docker build lives at github.com/hamr0/beeperbox.",
   "bin": {
     "beeperbox": "server.js"
