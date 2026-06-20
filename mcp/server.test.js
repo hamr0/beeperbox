@@ -12,6 +12,10 @@ const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
 
+// beeperFetch refuses to run without a token (read at module load), and the
+// account-map tests below drive it through a stubbed global.fetch.
+process.env.BEEPER_TOKEN = process.env.BEEPER_TOKEN || 'test-token';
+
 const S = require('./server.js');
 
 // ── cursor encode/decode ──────────────────────────────────────────
@@ -494,4 +498,78 @@ test('recordSent persists and loadLedger restores across a "restart"', () => {
     delete process.env.BEEPERBOX_SENT_LEDGER;
     S._resetLedger();
   }
+});
+
+// ── account-map cache resilience ──────────────────────────────────
+// The multis "added WhatsApp via noVNC → it didn't show, and a plain docker
+// restart didn't fix it, it recovered later" wedge. Root cause: getAccountMap
+// cached the accountID->network map for the whole process life with no TTL and
+// happily froze an EMPTY map captured during the backend's post-restart sync
+// window. These prove the bound + never-cache-empty behavior; each is written
+// to FAIL against the old unbounded cache.
+const REAL_FETCH = global.fetch;
+
+function stubAccounts(seq) {
+  let i = 0, calls = 0;
+  global.fetch = async () => {
+    calls++;
+    const body = seq[Math.min(i++, seq.length - 1)];
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  };
+  return () => calls;
+}
+function acct(id, network, status = 'connected') {
+  return { accountID: id, network, status, user: { fullName: id } };
+}
+
+test('getAccountMap: an empty /v1/accounts is NOT cached (sync-window self-heals next call)', async () => {
+  S._resetAccountCache();
+  S._setNow(() => 1000);
+  const calls = stubAccounts([ [], [acct('matrix', 'Beeper')] ]);
+  try {
+    const first = await S.getAccountMap();          // backend mid-sync returns []
+    assert.deepEqual(first, {});                     // serve empty for THIS call
+    const second = await S.getAccountMap();          // must re-read, not freeze []
+    assert.ok(second.matrix, 'second call picks up the now-synced account');
+    assert.equal(calls(), 2, 'empty result forced a re-read instead of freezing');
+  } finally { S._setNow(null); global.fetch = REAL_FETCH; }
+});
+
+test('getAccountMap: a populated map IS cached within the TTL (one fetch for rapid calls)', async () => {
+  S._resetAccountCache();
+  S._setNow(() => 5000);
+  const calls = stubAccounts([ [acct('matrix', 'Beeper')] ]);
+  try {
+    await S.getAccountMap();
+    await S.getAccountMap();
+    assert.equal(calls(), 1, 'second call within TTL served from cache');
+  } finally { S._setNow(null); global.fetch = REAL_FETCH; }
+});
+
+test('getAccountMap: a runtime-added account becomes visible after the TTL, no process restart', async () => {
+  // The headline regression: old code froze the first map forever, so a WhatsApp
+  // account added via noVNC stayed network:"unknown" until the process restarted.
+  S._resetAccountCache();
+  let t = 10000;
+  S._setNow(() => t);
+  const calls = stubAccounts([
+    [acct('matrix', 'Beeper')],
+    [acct('matrix', 'Beeper'), acct('local-whatsapp_x', 'WhatsApp')],
+  ]);
+  try {
+    const before = await S.getAccountMap();
+    assert.ok(!before['local-whatsapp_x'], 'whatsapp not present yet');
+    t += 60001;                                       // advance past the 60s TTL — NO restart
+    const after = await S.getAccountMap();
+    assert.ok(after['local-whatsapp_x'], 'whatsapp visible after TTL without a restart');
+    assert.equal(after['local-whatsapp_x'].network, 'whatsapp');
+    assert.equal(calls(), 2);
+  } finally { S._setNow(null); global.fetch = REAL_FETCH; }
+});
+
+test('normalizeAccount surfaces the backend connection status (observability)', () => {
+  const out = S.normalizeAccount(acct('telegram', 'Telegram', 'connecting'));
+  assert.equal(out.status, 'connecting', 'status must be relayed so connecting != connected is visible');
+  assert.equal(out.network, 'telegram');
+  assert.equal(out.account_id, 'telegram');
 });

@@ -122,8 +122,8 @@ All tools are called via JSON-RPC 2.0 `tools/call` with `{name, arguments}`. Req
 Discover which messaging platforms are connected.
 
 **Arguments:** none.
-**Returns:** array of `{account_id, network, network_label, user: {id, display_name}}`.
-**Use at session start** to see which networks are reachable before making branching decisions.
+**Returns:** array of `{account_id, network, network_label, status, user: {id, display_name}}`. `status` is the bridge's backend connection state (`"connected"`, `"connecting"`, …) — use it to tell a still-syncing account from a real one rather than treating a transient as "gone".
+**Use at session start** to see which networks are reachable before making branching decisions. A `0`/short result right after a container restart or a noVNC account-add usually means Beeper is still syncing — retry shortly rather than concluding "no accounts" (beeperbox logs this to stderr and never freezes a stale account map).
 
 ### `list_inbox`
 
