@@ -15,3 +15,8 @@ node_modules/
 # local tooling scratch dirs (session/stash state, page snapshots)
 .claude/stash/
 .barebrowse/
+
+# Agent / IDE scratch — never commit (per hamr0 LIBRARY_CONVENTIONS §7)
+.claude/
+.litectx/
+.idea/
