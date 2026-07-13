@@ -14,6 +14,14 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ## [Unreleased]
 
+### Fixed
+
+- **Publish workflow pinned to `npm@11` — npm 12.0.0's `npm publish --provenance` is broken.** The job ran `npm install -g npm@latest`, which started resolving to npm 12.0.0 (released 2026-07-09) on the Node 22 runner. npm 12's `libnpmpublish` provenance code does `require('sigstore')`, but the tarball bundles only the `@sigstore/*` scoped packages — so `--provenance` dies with `MODULE_NOT_FOUND` and the publish fails outright. npm@11 bundles `sigstore` and publishes fine. Pinned to the major rather than floating on `@latest`. Revisit once npm ships a provenance fix. CI only — no runtime or published-artifact change.
+
+### Changed
+
+- **Agent/IDE scratch is gitignored and de-tracked (`.claude/`, `.litectx/`, `.idea/`).** Per-machine agent and IDE state is no part of the package — it regenerates locally and only added noise and churn. Now ignored, and any already-committed copies removed from tracking (local files kept on disk). Functional dot-paths (`.github/`, `.gitignore`, `.npmignore`, `.mcp.json`) stay tracked. Repo hygiene only.
+
 Repository hygiene and agent-facing documentation. **Nothing here changes the running container**: the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched, so no version has been minted. These notes fold into whatever release ships next.
 
 ### Changed
