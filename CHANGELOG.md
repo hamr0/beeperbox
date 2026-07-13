@@ -12,6 +12,18 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+Repository hygiene and agent-facing documentation. **Nothing here changes the running container**: the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched, so no version has been minted. These notes fold into whatever release ships next.
+
+### Changed
+
+- **`.gitignore` now default-denies every dot-directory** (`.*/`) and re-admits only `.github/`, replacing the per-directory list (`.claude/`, `.litectx/`, `.idea/`, `.barebrowse/`). Each new agent/IDE/tooling scratch dir previously had to be chased with its own line — and one (`.barebrowse/`, from browser-automation page snapshots) was only caught after the fact. Default-deny closes that gap.
+
+### Documentation
+
+- **`CLAUDE.md` now carries a repo guide** instead of only importing the two memory files. Documents the commands (unit tests via `node --test`, the `asset-serve-check` / `mcp-guard-check` / `vnc-auth-check` harnesses, both run modes), and the architecture that only reveals itself across several files: the one-file/two-modes version-parity invariant and the tests that pin it; the container port topology (host `23373` → container `23380` via the `socat` forwarder, because Beeper's API binds container-loopback); the two deliberate-but-bug-shaped settings (`MCP_BIND_ADDR=0.0.0.0` and `BEEPERBOX_PREFLIGHT=0`, both baked into the image on purpose); and the three subtle runtime mechanisms (the `source`-not-`is_self` echo-guard, the `selectDelivery` headroom that prevents silent message loss, and why `assertServableSrcUrl` must permit `file://` inside Beeper's media cache).
+
 ## [0.9.0] — 2026-06-20 `[MINOR]`
 
 Account-sync resilience + observability — filed by [multis](https://github.com/hamr0/multis) after a WhatsApp account added via noVNC didn't surface, and a plain `docker restart` didn't recover it (it self-corrected only later). MINOR per the versioning policy: `list_accounts` gains a new `status` schema field (new runtime behavior). No tool was added or removed — the verb set is still the 12 documented tools; this changes one tool's output shape and the runtime's caching behavior.
