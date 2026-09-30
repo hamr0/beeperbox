@@ -12,6 +12,20 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+### Fixed
+
+- **Weekly rebuild could ship a stale Beeper: the build cache reused an old download.** The Dockerfile's default downloads Beeper from a fixed "latest stable" URL, so the `RUN` step's text never changed and `cache-from: type=gha` kept reusing the old layer (the v0.9.1 publish step logged `DONE 0.0s` and shipped Beeper 4.3.123 while stable was already newer). `verify` and `publish` could also build *different* Beeper versions, since `verify-arm64` had no cache and downloaded fresh. Fix: new `scripts/resolve-beeper-version.sh` follows the stable redirect once per run, checks the x86_64 and arm64 artifacts for that exact version both exist, and `release.yml` (`prepare`, and `edge` for master pushes) passes the result to every build as `BEEPER_VERSION`. A new Beeper now changes the cache key, and every job in a run builds the same version. The rolling default remains for local/manual builds.
+- **Release gate now also checks the API is reachable from outside and the container goes healthy.** `scripts/first-paint-check.sh` publishes container port 23380 (the socat forwarder) on a loopback port and, after the paint check, requires `/v1/info` to return an `app.version` and the container HEALTHCHECK to report `healthy` — in the same single boot. Before, a broken forwarder or API would have passed `verify`. Assumes a fresh, never-logged-in Beeper 4.3.x starts its API without login (true on 4.3.123); if a future Beeper stops doing that the gate fails closed and publish is skipped.
+- **`scripts/rfb.py` reads the RFB handshake to full length.** The version string, security-type count and refusal reason are read until complete or the peer closes, so a read split across TCP segments is no longer misjudged as "not an RFB server". Error messages unchanged.
+- **`verify` and `verify-arm64` run with least privilege (`contents: read`).** They only build locally and never push, so they no longer inherit `packages: write`.
+- **A failed release run now opens (or comments on) a GitHub issue.** `notify-failure` in `release.yml` keeps its step summary and adds an issue labelled `release-gate-failed`, assigned to the repo owner, with the ref, Beeper version, trigger, per-job results and run link. If one is already open, repeated weekly failures comment on it instead of opening duplicates; closing it after the fix lets the next failure open a fresh one. If `publish` itself failed, the body says the push may be partial. The job gets `issues: write` + `contents: read` only.
+
+### Documentation
+
+- **`docs/PRD.md` version-history table brought up to 0.9.1** (it stopped at 0.8.0).
+
 ## [0.9.1] — 2026-09-30 `[PATCH]`
 
 First-paint fix for Beeper 4.3.123 (issue #27) plus the gate that would have caught it, alongside repository hygiene and documentation. PATCH per the versioning policy: a launch-flag bug fix and CI/release-workflow changes — no tool was added or removed, and the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched; the repository-hygiene and documentation entries below do not change the running container.
