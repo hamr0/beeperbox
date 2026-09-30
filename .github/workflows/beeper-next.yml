@@ -30,6 +30,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      sha: ${{ steps.commit.outputs.sha }}
       pinned: ${{ steps.pinned.outputs.version }}
       newest: ${{ steps.newest.outputs.version }}
       newer: ${{ steps.cmp.outputs.newer }}
@@ -38,6 +39,16 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: master
+
+      - name: Resolve commit under test
+        id: commit
+        run: |
+          sha="$(git rev-parse HEAD)"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Checked-out commit SHA resolved empty or malformed"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Read pinned Beeper version
         id: pinned
@@ -82,10 +93,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout master
+      - name: Checkout tested commit
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ needs.check.outputs.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -120,10 +131,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout master
+      - name: Checkout tested commit
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ needs.check.outputs.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -152,10 +163,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Checkout master
+      - name: Checkout tested commit
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ needs.check.outputs.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -215,6 +226,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           PINNED: ${{ needs.check.outputs.pinned }}
           NEWEST: ${{ needs.check.outputs.newest }}
+          SHA: ${{ needs.check.outputs.sha }}
           RES_CHECK: ${{ needs.check.result }}
           RES_GATE_AMD64: ${{ needs.gate-amd64.result }}
           RES_GATE_ARM64: ${{ needs.gate-arm64.result }}
@@ -261,6 +273,7 @@ jobs:
 
           - Pinned (releases, \`:latest\`): \`$PINNED\`
           - Newest stable: \`$NEWEST\`
+          - Commit tested and published: \`$SHA\`
           - Run: $RUN_URL
 
           | Job | Result |

@@ -113,7 +113,7 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | `BEEPERBOX_SUPERVISE` / `_SUPERVISE_INTERVAL` / `_SUPERVISE_API_GRACE` | `1` / `10` / `6` | Backend supervision: enable (`0` = old forward-signal-and-wait), seconds between checks, and consecutive API-down checks (after the API has been up once) before recycling beepertexts. Non-numeric values fall back to the default. |
 | `BEEPERBOX_ACCOUNT_CACHE_TTL_MS` | `60000` | TTL on the in-memory accountID → network map that chat normalizers use. Bounds how long a runtime account change (e.g. WhatsApp added via noVNC) can lag before chat verbs show its network label — without this the map was cached for the whole process life and an account-add stayed `network:"unknown"` until a restart. An **empty** `/v1/accounts` (the backend mid-sync after a restart/add) is never cached regardless, so the map self-heals the moment Beeper finishes syncing. Set `0` to disable caching (always read `/v1/accounts` live). |
 | `VNC_PASSWORD` | unset | When set, the noVNC/x11vnc session requires a password (RFB security type *VNC auth*). |
-| `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; unset ⇒ rolling auto-update. |
+| `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; CI always passes the version from `beeper-version.txt`, and unset (a manual build without the arg) ⇒ rolling download. |
 
 ---
 
@@ -186,7 +186,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 - **Request body cap** — `MCP_MAX_BODY` (1 MiB) ⇒ `413`, closing an unbounded-buffer memory-exhaustion vector.
 - **VNC password (opt-in)** — `VNC_PASSWORD` switches x11vnc from RFB *None* to *VNC auth*, gating GUI takeover on `:6080`.
 - **Privilege-escalation hardening** — `security_opt: [no-new-privileges:true]`, shrinking the blast radius of Beeper running as root with `--no-sandbox`.
-- **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; default stays rolling auto-update.
+- **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; releases, `:edge` and PR builds build the version pinned in `beeper-version.txt`; `:next` tracks the newest stable; a manual build without `BEEPER_VERSION` uses the rolling download.
 
 **v0.7.0 hardening** — alongside `download_asset` (see CHANGELOG):
 
@@ -195,7 +195,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 **Load-bearing decisions (do not relitigate without changing this doc):**
 
 - **In-*container* listeners bind `0.0.0.0` on purpose; *lite mode* binds loopback.** A loopback bind inside the container is unreachable through a Docker published port, so the container binds `0.0.0.0` and its defense is the loopback *publish* (+ auth + Host/Origin). **Lite mode has no Docker publish in front of it**, so binding `0.0.0.0` would put the full tool surface on the LAN, reachable unauthenticated by any non-browser client that spoofs the `Host` header past the allowlist (demonstrated, not theoretical). Lite mode therefore binds `127.0.0.1` by default (`MCP_BIND_ADDR`); the container image overrides it to `0.0.0.0` via ENV. The bind is the boundary where there's no publish; the publish is the boundary where there is one.
-- **Beeper auto-update is the default and stays the default.** Pinning is opt-in; the weekly rebuild depends on the rolling URL.
+- **Releases, `:edge` and PR builds build the Beeper version pinned in `beeper-version.txt`.** `:next` tracks the newest stable Beeper; promoting one is a pin-file PR plus a release. Only a manual build without `--build-arg BEEPER_VERSION` still uses the rolling download.
 
 **Accepted residuals (documented, auditable, not bugs):**
 
