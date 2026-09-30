@@ -22,6 +22,7 @@ on:
       - 'scripts/asset-serve-check.js'
       - 'scripts/first-paint-check.sh'
       - 'scripts/vnc-paint-probe.py'
+      - 'scripts/rfb.py'
       - '.github/workflows/mcp-test.yml'
 
 permissions:

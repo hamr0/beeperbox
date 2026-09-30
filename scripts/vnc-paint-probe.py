@@ -14,62 +14,54 @@ Usage:  vnc-paint-probe.py <host> <port>
 Prints the distinct-colour count; exits non-zero if the peer isn't an open RFB
 server or the update can't be read.
 """
-import socket
+import os
 import struct
 import sys
 
-
-def recv_exact(s: socket.socket, n: int) -> bytes:
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = s.recv(min(65536, n - len(buf)))
-        if not chunk:
-            raise ConnectionError(f"peer closed after {len(buf)}/{n} bytes")
-        buf += chunk
-    return bytes(buf)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rfb  # noqa: E402  (sibling module, shared handshake)
 
 
 def count_colours(host: str, port: int) -> int:
-    with socket.create_connection((host, port), timeout=15) as s:
-        version = recv_exact(s, 12)
-        if not version.startswith(b"RFB "):
-            print(f"not an RFB server, got: {version!r}", file=sys.stderr)
-            sys.exit(2)
-        s.sendall(b"RFB 003.008\n")
-        types = recv_exact(s, recv_exact(s, 1)[0])
+    try:
+        s, types = rfb.connect(host, port, timeout=15)
+    except rfb.RfbError as e:
+        print(e, file=sys.stderr)
+        sys.exit(2)
+    with s:
         if 1 not in types:
-            print(f"server does not offer None(1) auth: {list(types)}", file=sys.stderr)
+            print(f"server does not offer None(1) auth: {types}", file=sys.stderr)
             sys.exit(2)
         s.sendall(b"\x01")
-        if struct.unpack(">I", recv_exact(s, 4))[0] != 0:
+        if struct.unpack(">I", rfb.recv_exact(s, 4))[0] != 0:
             print("security handshake failed", file=sys.stderr)
             sys.exit(2)
         s.sendall(b"\x01")  # ClientInit: shared
-        width, height = struct.unpack(">HH", recv_exact(s, 4))
-        bpp = recv_exact(s, 16)[0] // 8
-        recv_exact(s, struct.unpack(">I", recv_exact(s, 4))[0])  # desktop name
+        width, height = struct.unpack(">HH", rfb.recv_exact(s, 4))
+        bpp = rfb.recv_exact(s, 16)[0] // 8
+        rfb.recv_exact(s, struct.unpack(">I", rfb.recv_exact(s, 4))[0])  # desktop name
 
         s.sendall(struct.pack(">BxHi", 2, 1, 0))  # SetEncodings: Raw only
         s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, width, height))
 
         colours: set[bytes] = set()
         while True:
-            msg = recv_exact(s, 1)[0]
+            msg = rfb.recv_exact(s, 1)[0]
             if msg == 0:  # FramebufferUpdate
                 break
             if msg == 2:  # Bell
                 continue
             if msg == 3:  # ServerCutText
-                recv_exact(s, struct.unpack(">3xI", recv_exact(s, 7))[0])
+                rfb.recv_exact(s, struct.unpack(">3xI", rfb.recv_exact(s, 7))[0])
                 continue
             print(f"unexpected server message type {msg}", file=sys.stderr)
             sys.exit(2)
-        for _ in range(struct.unpack(">xH", recv_exact(s, 3))[0]):
-            _x, _y, w, h, enc = struct.unpack(">HHHHi", recv_exact(s, 12))
+        for _ in range(struct.unpack(">xH", rfb.recv_exact(s, 3))[0]):
+            _x, _y, w, h, enc = struct.unpack(">HHHHi", rfb.recv_exact(s, 12))
             if enc != 0:
                 print(f"unexpected encoding {enc}", file=sys.stderr)
                 sys.exit(2)
-            data = recv_exact(s, w * h * bpp)
+            data = rfb.recv_exact(s, w * h * bpp)
             colours.update(data[i:i + bpp] for i in range(0, len(data), bpp))
         return len(colours)
 

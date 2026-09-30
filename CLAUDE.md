@@ -130,7 +130,8 @@ flag; `scripts/first-paint-check.sh` is the gate.
 
 `scripts/mcp-guard-check.sh`, `scripts/first-paint-check.sh` and `scripts/vnc-auth-check.sh` are the
 **single source of truth** for the gates — `mcp-test.yml` runs the first two, `vnc-test.yml` the
-third, and `release.yml` runs all three in its verify job. What blocks a PR and what blocks a release are identical by design.
+third, and `release.yml` runs all three in its verify job (plus the first-paint gate again on a native arm64
+runner, `verify-arm64`). The two VNC probes share the RFB handshake in `scripts/rfb.py`. What blocks a PR and what blocks a release are identical by design.
 
 - **GHCR** — push a `v*` tag → `release.yml` (prepare → verify → publish), multi-arch amd64+arm64,
   rolls `:latest` → `:previous`. Weekly cron rebuild picks up new Beeper Desktop stable.
