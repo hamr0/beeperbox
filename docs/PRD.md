@@ -258,6 +258,9 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
 | 0.7.0 | 2026-06-16 | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped, src_url-confined). |
 | 0.8.0 | 2026-06-16 | Lite mode: `npx beeperbox` (npm package) against a local Beeper Desktop + startup preflight; sent-ledger per-user XDG path fix; lite mode binds loopback by default (`MCP_BIND_ADDR`, security). |
+| 0.8.1 | 2026-06-17 | Docs only: READMEs current with v0.6 → v0.8 (12-verb map, two run modes, npm-page README reshaped). |
+| 0.9.0 | 2026-06-20 | Account-sync resilience: TTL-bound account map (empty never cached), `list_accounts` surfaces backend `status`, zero-account stderr warning. |
+| 0.9.1 | 2026-09-30 | Fix blank first paint on Beeper 4.3.123 (`--use-angle=swiftshader`) + first-paint release/PR gate (amd64 + arm64); `npm@11` publish pin. |
 
 ---
 
