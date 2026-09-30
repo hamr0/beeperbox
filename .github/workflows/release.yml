@@ -66,6 +66,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       # Build context = the release ref (what actually ships). But the gate
       # scripts come from the workflow ref (latest), NOT the release ref: the
@@ -116,6 +118,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
     steps:
       - name: Checkout build context (release ref)
         uses: actions/checkout@v6
