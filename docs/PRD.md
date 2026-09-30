@@ -113,7 +113,7 @@ All three publish to `127.0.0.1` by design. Remote access is a deliberate opt-in
 | `BEEPERBOX_SUPERVISE` / `_SUPERVISE_INTERVAL` / `_SUPERVISE_API_GRACE` | `1` / `10` / `6` | Backend supervision: enable (`0` = old forward-signal-and-wait), seconds between checks, and consecutive API-down checks (after the API has been up once) before recycling beepertexts. Non-numeric values fall back to the default. |
 | `BEEPERBOX_ACCOUNT_CACHE_TTL_MS` | `60000` | TTL on the in-memory accountID → network map that chat normalizers use. Bounds how long a runtime account change (e.g. WhatsApp added via noVNC) can lag before chat verbs show its network label — without this the map was cached for the whole process life and an account-add stayed `network:"unknown"` until a restart. An **empty** `/v1/accounts` (the backend mid-sync after a restart/add) is never cached regardless, so the map self-heals the moment Beeper finishes syncing. Set `0` to disable caching (always read `/v1/accounts` live). |
 | `VNC_PASSWORD` | unset | When set, the noVNC/x11vnc session requires a password (RFB security type *VNC auth*). |
-| `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; unset ⇒ rolling auto-update. |
+| `BEEPER_VERSION` / `BEEPER_SHA256` | unset (build args) | Pin & hash-verify an exact Beeper AppImage for a reproducible build; CI always passes the version from `beeper-version.txt`, and unset (a manual build without the arg) ⇒ rolling download. |
 
 ---
 
@@ -186,7 +186,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 - **Request body cap** — `MCP_MAX_BODY` (1 MiB) ⇒ `413`, closing an unbounded-buffer memory-exhaustion vector.
 - **VNC password (opt-in)** — `VNC_PASSWORD` switches x11vnc from RFB *None* to *VNC auth*, gating GUI takeover on `:6080`.
 - **Privilege-escalation hardening** — `security_opt: [no-new-privileges:true]`, shrinking the blast radius of Beeper running as root with `--no-sandbox`.
-- **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; default stays rolling auto-update.
+- **Reproducible/verified builds (opt-in)** — `BEEPER_VERSION` + `BEEPER_SHA256` pin and hash-check the AppImage; releases, `:edge` and PR builds build the version pinned in `beeper-version.txt`; `:next` tracks the newest stable; a manual build without `BEEPER_VERSION` uses the rolling download.
 
 **v0.7.0 hardening** — alongside `download_asset` (see CHANGELOG):
 
@@ -195,7 +195,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 **Load-bearing decisions (do not relitigate without changing this doc):**
 
 - **In-*container* listeners bind `0.0.0.0` on purpose; *lite mode* binds loopback.** A loopback bind inside the container is unreachable through a Docker published port, so the container binds `0.0.0.0` and its defense is the loopback *publish* (+ auth + Host/Origin). **Lite mode has no Docker publish in front of it**, so binding `0.0.0.0` would put the full tool surface on the LAN, reachable unauthenticated by any non-browser client that spoofs the `Host` header past the allowlist (demonstrated, not theoretical). Lite mode therefore binds `127.0.0.1` by default (`MCP_BIND_ADDR`); the container image overrides it to `0.0.0.0` via ENV. The bind is the boundary where there's no publish; the publish is the boundary where there is one.
-- **Beeper auto-update is the default and stays the default.** Pinning is opt-in; the weekly rebuild depends on the rolling URL.
+- **Releases, `:edge` and PR builds build the Beeper version pinned in `beeper-version.txt`.** `:next` tracks the newest stable Beeper; promoting one is a pin-file PR plus a release. Only a manual build without `--build-arg BEEPER_VERSION` still uses the rolling download.
 
 **Accepted residuals (documented, auditable, not bugs):**
 
@@ -215,14 +215,15 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 |---|---|
 | `:X.Y.Z` | exact release (rebuilt by weekly cron only while it's the newest — *not* immutable; pin a `@sha256:` digest for bit-exact) |
 | `:X.Y` / `:X` | rolling within a minor / major (`:0` today) |
-| `:latest` | newest gated release; rebuilt weekly to pick up upstream Beeper AppImage drift |
+| `:latest` | newest gated release; rebuilt weekly at its pinned Beeper (`beeper-version.txt`, read from the release ref) |
 | `:previous` | the prior `:latest` — instant rollback via `BEEPERBOX_IMAGE_TAG=previous` |
-| `:edge` | every push to `master`; **ungated, may break** |
+| `:edge` | every push to `master` (at the pinned Beeper); **ungated, may break** |
+| `:next` / `:next-beeper-<ver>` | master built with the newest stable Beeper, published only after the amd64 + arm64 gates pass (`beeper-next.yml`); promote by changing `beeper-version.txt` and tagging a release |
 
 **CI-gated releases with rollback (safe rolling releases).** The release pipeline is `prepare → verify → publish`:
 
 - `verify` builds the image and runs the shared guard scripts (`scripts/mcp-guard-check.sh` — MCP tool contract + `200`/`403`/`413`/`401` matrix; `scripts/first-paint-check.sh` + `vnc-paint-probe.py` (both probes share the handshake in `rfb.py`) — fresh-profile first-window render check over VNC; `scripts/vnc-auth-check.sh` + `vnc-auth-probe.py` — RFB security-type probe) against it. A second job, `verify-arm64`, builds the arm64 image natively and runs the first-paint check only.
-- `publish` runs **only if `verify` and `verify-arm64` are green**. It first rolls the current `:latest` → `:previous` (server-side manifest copy, no rebuild), then builds & pushes the multi-arch tags. A failed gate **skips publish** (last-known-good `:latest` stays live) and flags the run.
+- `publish` runs **only if `verify` and `verify-arm64` are green**. It first rolls the current `:latest` → `:previous` (server-side manifest copy, no rebuild), then builds & pushes the multi-arch tags. A failed gate **skips publish** (last-known-good `:latest` stays live) and flags the run: a step summary, plus a `release-gate-failed` GitHub issue assigned to the owner (repeat failures comment on the open one).
 - The guard scripts are the **single source of truth** shared by the PR workflows (`mcp-test`, `vnc-test`) and the release gate, so "what the PR tests" and "what blocks a release" cannot drift. The gate sources scripts from the **latest workflow ref** (not the release ref), so the weekly rebuild of an older tag that predates the scripts still runs current checks.
 
 **Why not Watchtower / in-place auto-update?** Rejected as a default: a stateful, login-bearing app + the `docker.sock` attack surface, with no auto-rollback, outweighs the convenience. CI-gated publish + `:previous` is the chosen substitute.
@@ -258,6 +259,9 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 | 0.6.0 | 2026-06-15 | `poll_messages` watch primitive + exact-id echo-guard (`source`/`client_tag`); supervised backend + restart-survivable display. |
 | 0.7.0 | 2026-06-16 | Attachment reach: `attachments[]` on every `Message` + `download_asset` tool (bytes as base64 via `/v1/assets/serve`, byte-capped, src_url-confined). |
 | 0.8.0 | 2026-06-16 | Lite mode: `npx beeperbox` (npm package) against a local Beeper Desktop + startup preflight; sent-ledger per-user XDG path fix; lite mode binds loopback by default (`MCP_BIND_ADDR`, security). |
+| 0.8.1 | 2026-06-17 | Docs only: READMEs current with v0.6 → v0.8 (12-verb map, two run modes, npm-page README reshaped). |
+| 0.9.0 | 2026-06-20 | Account-sync resilience: TTL-bound account map (empty never cached), `list_accounts` surfaces backend `status`, zero-account stderr warning. |
+| 0.9.1 | 2026-09-30 | Fix blank first paint on Beeper 4.3.123 (`--use-angle=swiftshader`) + first-paint release/PR gate (amd64 + arm64); `npm@11` publish pin. |
 
 ---
 

@@ -5,18 +5,20 @@ name: release
 # pulled by the weekly rebuild) can't silently become :latest.
 #
 # Flow for the release path (tag push / weekly cron / manual dispatch):
-#   prepare  -> resolve which ref to build
+#   prepare  -> resolve which ref to build + read its pinned Beeper (beeper-version.txt)
 #   verify   -> build amd64, run the MCP + VNC guard checks and the first-paint check (the gate)
 #   verify-arm64 -> build arm64 natively (ubuntu-24.04-arm), run the first-paint check only
 #               (the renderer/GL path is per-arch; the other gates stay amd64-only)
 #   publish  -> roll current :latest to :previous, then build+push multi-arch
 #               semver tags + :latest  (only runs if verify AND verify-arm64 passed)
 # If either verify job fails, publish is skipped: the previous :latest stays live as the
-# last-known-good image, :previous is untouched, and notify-failure flags it.
+# last-known-good image, :previous is untouched, and notify-failure flags it: a step
+# summary on the run, plus a GitHub issue labelled release-gate-failed, assigned to the
+# repo owner (GitHub emails them). One open issue at a time: repeat failures comment on it.
 #
 # Triggers:
 #   - tag push (v*.*.*)        -> :X.Y.Z, :X.Y, :X, :latest (gated)
-#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag, refresh Beeper (gated)
+#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag at its pinned Beeper (gated)
 #   - manual dispatch          -> ad-hoc gated rebuild of newest release tag
 #   - push to master           -> :edge (bleeding-edge, ungated by design)
 
@@ -43,6 +45,7 @@ jobs:
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
       skip: ${{ steps.ref.outputs.skip }}
+      beeper_version: ${{ steps.beeper.outputs.version }}
     steps:
       - name: Resolve ref
         id: ref
@@ -60,12 +63,52 @@ jobs:
             echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # The Beeper version is PINNED in beeper-version.txt and read from the
+      # RELEASE ref (the tag being built), not the workflow ref: each tag carries
+      # its own Beeper, so the weekly rebuild of a tag is reproducible and :latest
+      # never jumps to an unvetted Beeper. Newer Beepers are offered separately as
+      # :next (beeper-next.yml) and promoted by changing the pin in a PR. Fails
+      # closed: a ref without the pin file fails prepare (no fall back to latest
+      # stable). The script comes from the workflow ref (latest), like the other
+      # test tooling; the pin file from the release ref, checked out to a side
+      # path (same pattern as .ci-tools in the gate jobs).
+      - name: Checkout pin script (latest workflow ref)
+        if: steps.ref.outputs.skip != 'true'
+        uses: actions/checkout@v6
+
+      - name: Checkout release ref (for its Beeper pin)
+        if: steps.ref.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          path: .release-ref
+
+      - name: Read pinned Beeper version
+        id: beeper
+        if: steps.ref.outputs.skip != 'true'
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          pin=".release-ref/beeper-version.txt"
+          if [ ! -f "$pin" ]; then
+            echo "::error::Release ref $REF has no beeper-version.txt; refusing to fall back to latest stable Beeper. Add the pin file in a release that includes it."
+            exit 1
+          fi
+          v="$(bash scripts/pinned-beeper-version.sh "$pin")"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
   # The gate: build the candidate image and run the same checks the PRs run.
   # Nothing here pushes to GHCR.
   verify:
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       # Build context = the release ref (what actually ships). But the gate
       # scripts come from the workflow ref (latest), NOT the release ref: the
@@ -93,6 +136,7 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: beeperbox:candidate
+          build-args: BEEPER_VERSION=${{ needs.prepare.outputs.beeper_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -116,6 +160,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
     steps:
       - name: Checkout build context (release ref)
         uses: actions/checkout@v6
@@ -137,6 +183,7 @@ jobs:
           load: true
           platforms: linux/arm64
           tags: beeperbox:candidate
+          build-args: BEEPER_VERSION=${{ needs.prepare.outputs.beeper_version }}
           cache-from: type=gha,scope=arm64
           cache-to: type=gha,mode=max,scope=arm64
 
@@ -199,25 +246,105 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: BEEPER_VERSION=${{ needs.prepare.outputs.beeper_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Flags a failed gate/publish loudly. :latest is unchanged on failure, so
-  # this is "we did NOT ship", not "we shipped something broken".
+  # Flags a failed gate/publish loudly: a step summary on the run, plus a GitHub
+  # issue (label release-gate-failed, assigned to the repo owner) so the failure
+  # arrives as a notification. If an issue with that label is already open, the
+  # new failure is added as a comment instead of opening a duplicate; closing the
+  # issue after the fix lets the next failure open a fresh one. On a gate failure
+  # :latest is unchanged ("we did NOT ship"); if publish itself failed the push may
+  # be partial, and the issue body says so. Job-level permissions replace the
+  # workflow-level set, so this job lists exactly what it needs.
   notify-failure:
     needs: [prepare, verify, verify-arm64, publish]
     if: failure() && needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Summarize
+        env:
+          REF: ${{ needs.prepare.outputs.ref }}
+          RES_PUBLISH: ${{ needs.publish.result }}
         run: |
           {
-            echo "## ⚠️ Release gate failed — \`:latest\` was NOT updated"
-            echo ""
-            echo "Ref: \`${{ needs.prepare.outputs.ref }}\`"
-            echo ""
-            echo "The verify (guard tests) or publish step failed. The previous \`:latest\` remains the live image and \`:previous\` is unchanged — nothing broken was shipped. Investigate the failing job before re-running."
+            if [ "$RES_PUBLISH" = "failure" ]; then
+              echo "## ⚠️ Release publish failed — the push may have been partial"
+              echo ""
+              echo "Ref: \`$REF\`"
+              echo ""
+              echo "The publish job failed part-way, so some tags may have moved. Check the GHCR tags (\`:latest\`, \`:previous\`, and the version tags) before re-running."
+            else
+              echo "## ⚠️ Release gate failed — \`:latest\` was NOT updated"
+              echo ""
+              echo "Ref: \`$REF\`"
+              echo ""
+              echo "The verify (guard tests) or publish step failed. The previous \`:latest\` remains the live image and \`:previous\` is unchanged — nothing broken was shipped. Investigate the failing job before re-running."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # All ${{ }} values arrive through env and are used only as quoted shell
+      # variables: nothing from the event or job outputs is interpolated into code.
+      - name: Open or update release-gate-failed issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          REF: ${{ needs.prepare.outputs.ref }}
+          BEEPER_VERSION: ${{ needs.prepare.outputs.beeper_version }}
+          EVENT: ${{ github.event_name }}
+          RES_PREPARE: ${{ needs.prepare.result }}
+          RES_VERIFY: ${{ needs.verify.result }}
+          RES_VERIFY_ARM64: ${{ needs.verify-arm64.result }}
+          RES_PUBLISH: ${{ needs.publish.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BV="${BEEPER_VERSION:-unresolved}"
+          BODY="$(mktemp)"
+          {
+            cat <<EOF
+          The release workflow failed.
+
+          - Ref: \`$REF\`
+          - Beeper version: \`$BV\`
+          - Trigger: \`$EVENT\`
+          - Run: $RUN_URL
+
+          | Job | Result |
+          |---|---|
+          | prepare | $RES_PREPARE |
+          | verify | $RES_VERIFY |
+          | verify-arm64 | $RES_VERIFY_ARM64 |
+          | publish | $RES_PUBLISH |
+
+          EOF
+            if [ "$RES_PUBLISH" = "failure" ]; then
+              echo "The gates passed but the publish step itself failed, so the push may have been partial. Check the tags on GHCR (\`:latest\`, \`:previous\`, the version tags) before assuming anything."
+            else
+              echo "Nothing was shipped: the previous \`:latest\` is still the live image and \`:previous\` is unchanged."
+            fi
+            echo ""
+            echo "After the fix, close this issue; the next failure will then open a fresh one."
+          } > "$BODY"
+
+          gh label create release-gate-failed --color B60205 \
+            --description "A release workflow run failed its gate or publish" --force
+
+          EXISTING="$(gh issue list --label release-gate-failed --state open --json number --jq '.[0].number')"
+          if [ -z "$EXISTING" ]; then
+            gh issue create \
+              --title "Release gate failed: $REF (Beeper $BV)" \
+              --body-file "$BODY" \
+              --label release-gate-failed \
+              --assignee "$OWNER"
+          else
+            gh issue comment "$EXISTING" --body-file "$BODY"
+          fi
 
   # Every push to master publishes :edge — bleeding-edge, may break between
   # releases, ungated by design. Users opt in explicitly.
@@ -227,6 +354,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      # Same pin file as the release path (see prepare), read from the checked-out
+      # master tree; passed as a build-arg so the build cache refreshes when the
+      # pin changes.
+      - name: Read pinned Beeper version
+        id: beeper
+        run: |
+          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -258,5 +398,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: BEEPER_VERSION=${{ steps.beeper.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

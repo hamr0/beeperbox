@@ -57,9 +57,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # unsquashfs directly bypasses the launcher entirely and works identically
 # on any build platform.
 ARG TARGETARCH
-# Beeper Desktop download. DEFAULT (both args empty): the rolling "stable"
-# URL, so the image always picks up the latest Beeper — the weekly cron
-# rebuild relies on this and it must stay the default. For a reproducible /
+# Beeper Desktop download. CI always passes BEEPER_VERSION: releases, :edge and
+# the PR gate use the version pinned in beeper-version.txt, and the :next channel
+# (beeper-next.yml) uses the newest stable. Pinning per run means every job in a
+# run builds the same Beeper and the build cache refreshes when it changes (this
+# RUN's text is otherwise constant, so a cached layer would keep a stale
+# download). The rolling default (both args empty: the "stable" URL) exists only
+# for manual/local builds without the arg. For a reproducible /
 # verifiable build, set BEEPER_VERSION (and optionally BEEPER_SHA256) as
 # build args: that pins an exact versioned artifact and, when a hash is
 # given, fails the build on mismatch. Supply chain note: the rolling default

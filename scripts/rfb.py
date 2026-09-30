@@ -25,6 +25,18 @@ def recv_exact(s: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
+def _recv_upto(s: socket.socket, n: int) -> bytes:
+    """Like recv_exact, but returns what arrived if the peer closes early, so
+    callers can put the partial bytes in their error message."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = s.recv(min(65536, n - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
 def connect(host: str, port: int, timeout: float) -> tuple[socket.socket, list[int]]:
     """Open a connection, get past version exchange, return (socket, security types).
 
@@ -33,17 +45,17 @@ def connect(host: str, port: int, timeout: float) -> tuple[socket.socket, list[i
     """
     s = socket.create_connection((host, port), timeout=timeout)
     try:
-        version = s.recv(12)
+        version = _recv_upto(s, 12)
         if not version.startswith(b"RFB "):
             raise RfbError(f"not an RFB server, got: {version!r}")
         s.sendall(b"RFB 003.008\n")
-        first = s.recv(1)
+        first = _recv_upto(s, 1)
         if not first:
             raise RfbError("no security-type count byte received")
         count = first[0]
         if count == 0:
-            reason_len = int.from_bytes(s.recv(4), "big")
-            reason = s.recv(reason_len)
+            reason_len = int.from_bytes(_recv_upto(s, 4), "big")
+            reason = _recv_upto(s, reason_len)
             raise RfbError(f"server refused handshake: {reason!r}")
         return s, list(recv_exact(s, count))
     except BaseException:

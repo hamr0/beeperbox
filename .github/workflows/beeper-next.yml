@@ -1,0 +1,314 @@
+name: beeper-next
+
+# Offers the newest stable Beeper Desktop as a separate image channel, without
+# touching releases. :latest (release.yml) stays on the Beeper pinned in
+# beeper-version.txt; this workflow builds master with the newest stable Beeper,
+# runs the same gates as the release verify legs, and on success publishes
+#   ghcr.io/<owner>/beeperbox:next
+#   ghcr.io/<owner>/beeperbox:next-beeper-<newest>   (a specific Beeper build)
+# It never touches :latest, :previous, :edge or the version tags. A
+# `beeper-update` issue (assigned to the owner) reports the outcome, once per
+# Beeper version: later runs for the same version comment on it.
+#
+# To promote a Beeper: change beeper-version.txt to the new version in a PR,
+# merge, and tag a release.
+#
+# Runs only when newest stable != pinned. A plain inequality, not semver order.
+#
+# Triggers: weekly cron (Mon 07 UTC, an hour after release.yml's 06) + manual.
+on:
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      pinned: ${{ steps.pinned.outputs.version }}
+      newest: ${{ steps.newest.outputs.version }}
+      newer: ${{ steps.cmp.outputs.newer }}
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Resolve commit under test
+        id: commit
+        run: |
+          sha="$(git rev-parse HEAD)"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Checked-out commit SHA resolved empty or malformed"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Read pinned Beeper version
+        id: pinned
+        run: |
+          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve newest stable Beeper version
+        id: newest
+        run: |
+          v="$(bash scripts/resolve-beeper-version.sh)"
+          if [ -z "$v" ]; then
+            echo "::error::Newest Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Compare
+        id: cmp
+        env:
+          PINNED: ${{ steps.pinned.outputs.version }}
+          NEWEST: ${{ steps.newest.outputs.version }}
+        run: |
+          if [ "$NEWEST" != "$PINNED" ]; then
+            echo "newer=true" >> "$GITHUB_OUTPUT"
+            echo "Newest stable Beeper $NEWEST differs from pinned $PINNED"
+          else
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned Beeper $PINNED is already the newest stable; nothing to do."
+          fi
+
+  # Gates mirror release.yml's verify / verify-arm64, building master. Nothing
+  # here pushes to GHCR.
+  gate-amd64:
+    needs: check
+    if: needs.check.outputs.newer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build candidate (amd64, load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: beeperbox:candidate
+          build-args: BEEPER_VERSION=${{ needs.check.outputs.newest }}
+          cache-from: type=gha,scope=next-amd64
+          cache-to: type=gha,mode=max,scope=next-amd64
+
+      - name: MCP guard gate
+        run: bash scripts/mcp-guard-check.sh beeperbox:candidate
+
+      - name: First-paint gate
+        run: bash scripts/first-paint-check.sh beeperbox:candidate
+
+      - name: Install Xvfb + x11vnc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
+
+      - name: VNC auth gate
+        run: bash scripts/vnc-auth-check.sh
+
+  gate-arm64:
+    needs: check
+    if: needs.check.outputs.newer == 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build candidate (arm64, load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: beeperbox:candidate
+          build-args: BEEPER_VERSION=${{ needs.check.outputs.newest }}
+          cache-from: type=gha,scope=next-arm64
+          cache-to: type=gha,mode=max,scope=next-arm64
+
+      - name: First-paint gate (arm64)
+        run: bash scripts/first-paint-check.sh beeperbox:candidate
+
+  # Only runs if both gates passed. Pushes :next and :next-beeper-<newest>
+  # only; never :latest, :previous or a version tag.
+  publish-next:
+    needs: [check, gate-amd64, gate-arm64]
+    if: needs.check.outputs.newer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/beeperbox
+          tags: |
+            type=raw,value=next
+            type=raw,value=next-beeper-${{ needs.check.outputs.newest }}
+
+      - name: Build and push :next
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: BEEPER_VERSION=${{ needs.check.outputs.newest }}
+          cache-from: type=gha,scope=next-amd64
+          cache-to: type=gha,mode=max,scope=next-amd64
+
+  # Reports the outcome as a `beeper-update` issue assigned to the owner. One
+  # issue per Beeper version: if an OPEN one already names this version, the
+  # result is added as a comment. If the `check` job itself failed (download
+  # server unreachable, bad pin file, resolver error) no version result exists,
+  # so a separate "Beeper :next check failed" issue is opened instead (or
+  # commented on, if one is already open). All ${{ }} values arrive through env
+  # and are used only as quoted shell variables.
+  notify:
+    needs: [check, gate-amd64, gate-arm64, publish-next]
+    if: always() && (needs.check.result == 'failure' || needs.check.outputs.newer == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update beeper-update issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          PINNED: ${{ needs.check.outputs.pinned }}
+          NEWEST: ${{ needs.check.outputs.newest }}
+          SHA: ${{ needs.check.outputs.sha }}
+          RES_CHECK: ${{ needs.check.result }}
+          RES_GATE_AMD64: ${{ needs.gate-amd64.result }}
+          RES_GATE_ARM64: ${{ needs.gate-arm64.result }}
+          RES_PUBLISH: ${{ needs.publish-next.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$RES_CHECK" = "failure" ]; then
+            PIN_SHOWN="${PINNED:-unresolved}"
+            BODY="$(mktemp)"
+            cat > "$BODY" <<EOF
+          The Beeper version check could not run, so no newer-Beeper result is available.
+
+          - Check job result: \`$RES_CHECK\`
+          - Pinned (releases, \`:latest\`): \`$PIN_SHOWN\`
+          - Run: $RUN_URL
+
+          \`:next\` was not updated. \`:latest\` is unaffected.
+          EOF
+            gh label create beeper-update --color 0E8A16 \
+              --description "A newer stable Beeper was gate-tested as :next" --force
+            EXISTING="$(gh issue list --label beeper-update --state open --json number,title \
+              | jq -r '[.[] | select(.title | startswith("Beeper :next check failed"))][0].number // empty')"
+            if [ -z "$EXISTING" ]; then
+              gh issue create \
+                --title "Beeper :next check failed (pinned: $PIN_SHOWN)" \
+                --body-file "$BODY" \
+                --label beeper-update \
+                --assignee "$OWNER"
+            else
+              gh issue comment "$EXISTING" --body-file "$BODY"
+            fi
+            exit 0
+          fi
+          if [ "$RES_GATE_AMD64" = "success" ] && [ "$RES_GATE_ARM64" = "success" ] && [ "$RES_PUBLISH" = "success" ]; then
+            OUTCOME=passed
+          else
+            OUTCOME=failed
+          fi
+          BODY="$(mktemp)"
+          {
+            cat <<EOF
+          Beeper \`$NEWEST\` $OUTCOME the gates.
+
+          - Pinned (releases, \`:latest\`): \`$PINNED\`
+          - Newest stable: \`$NEWEST\`
+          - Commit tested and published: \`$SHA\`
+          - Run: $RUN_URL
+
+          | Job | Result |
+          |---|---|
+          | gate-amd64 | $RES_GATE_AMD64 |
+          | gate-arm64 | $RES_GATE_ARM64 |
+          | publish-next | $RES_PUBLISH |
+
+          EOF
+            if [ "$OUTCOME" = "passed" ]; then
+              echo "Available as \`:next\` / \`:next-beeper-$NEWEST\`."
+              echo ""
+              echo "To promote: change \`beeper-version.txt\` to \`$NEWEST\` in a PR, merge, and tag a release."
+            else
+              if [ "$RES_GATE_AMD64" != "success" ]; then echo "Failed gate: gate-amd64 ($RES_GATE_AMD64)."; fi
+              if [ "$RES_GATE_ARM64" != "success" ]; then echo "Failed gate: gate-arm64 ($RES_GATE_ARM64)."; fi
+              if [ "$RES_PUBLISH" != "success" ] && [ "$RES_GATE_AMD64" = "success" ] && [ "$RES_GATE_ARM64" = "success" ]; then
+                echo "Both gates passed but publish-next did not succeed ($RES_PUBLISH); the push may have been partial."
+              fi
+              echo ""
+              echo "\`:next\` was not updated. \`:latest\` is unaffected."
+            fi
+          } > "$BODY"
+
+          gh label create beeper-update --color 0E8A16 \
+            --description "A newer stable Beeper was gate-tested as :next" --force
+
+          EXISTING="$(gh issue list --label beeper-update --state open --json number,title \
+            | jq -r --arg v "Beeper $NEWEST " '[.[] | select(.title | contains($v))][0].number // empty')"
+          if [ -z "$EXISTING" ]; then
+            gh issue create \
+              --title "Beeper $NEWEST $OUTCOME the gates (pinned: $PINNED)" \
+              --body-file "$BODY" \
+              --label beeper-update \
+              --assignee "$OWNER"
+          else
+            gh issue comment "$EXISTING" --body-file "$BODY"
+          fi
