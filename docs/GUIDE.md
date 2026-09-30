@@ -1019,6 +1019,8 @@ docker compose restart
 
 If that still fails, check the container logs for `[SDK]` lines. No lines at all means Beeper Desktop never launched (usually a missing lib — report it as an issue).
 
+If the API answers (`/v1/info` works) but the screen stays blank or grey even after a restart, you are likely on an image older than 0.9.1: Beeper 4.3.123 never painted its first window under Xvfb there (issue #27). Pull the current image (`docker compose pull && docker compose up -d`).
+
 ### `curl http://localhost:23373/v1/info` returns "Connection reset by peer"
 
 Either the socat forwarder didn't start, or Beeper's API isn't up yet. Check:

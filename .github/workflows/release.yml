@@ -6,10 +6,12 @@ name: release
 #
 # Flow for the release path (tag push / weekly cron / manual dispatch):
 #   prepare  -> resolve which ref to build
-#   verify   -> build amd64, run the MCP + VNC guard checks (the gate)
+#   verify   -> build amd64, run the MCP + VNC guard checks and the first-paint check (the gate)
+#   verify-arm64 -> build arm64 natively (ubuntu-24.04-arm), run the first-paint check only
+#               (the renderer/GL path is per-arch; the other gates stay amd64-only)
 #   publish  -> roll current :latest to :previous, then build+push multi-arch
-#               semver tags + :latest  (only runs if verify passed)
-# If verify fails, publish is skipped: the previous :latest stays live as the
+#               semver tags + :latest  (only runs if verify AND verify-arm64 passed)
+# If either verify job fails, publish is skipped: the previous :latest stays live as the
 # last-known-good image, :previous is untouched, and notify-failure flags it.
 #
 # Triggers:
@@ -97,16 +99,54 @@ jobs:
       - name: MCP guard gate
         run: bash .ci-tools/scripts/mcp-guard-check.sh beeperbox:candidate
 
+      - name: First-paint gate
+        run: bash .ci-tools/scripts/first-paint-check.sh beeperbox:candidate
+
       - name: Install Xvfb + x11vnc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
 
       - name: VNC auth gate
         run: bash .ci-tools/scripts/vnc-auth-check.sh
 
-  # Publish only runs if verify passed. Rolls the current :latest to :previous
+  # arm64 leg of the gate: publish ships arm64 too, and the first-paint failure
+  # class (GL/renderer under Xvfb) is architecture-specific. Native arm runner,
+  # no QEMU. Only the first-paint check runs here; MCP guard + VNC auth stay
+  # amd64-only. Same checkout pattern as verify. Nothing here pushes to GHCR.
+  verify-arm64:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout build context (release ref)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Checkout test tooling (latest workflow ref)
+        uses: actions/checkout@v6
+        with:
+          path: .ci-tools
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build candidate (arm64, load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: beeperbox:candidate
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+      - name: First-paint gate (arm64)
+        run: bash .ci-tools/scripts/first-paint-check.sh beeperbox:candidate
+
+  # Publish only runs if both verify jobs passed. Rolls the current :latest to :previous
   # for a known-good fallback, then builds + pushes the multi-arch image.
   publish:
-    needs: [prepare, verify]
+    needs: [prepare, verify, verify-arm64]
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
@@ -165,7 +205,7 @@ jobs:
   # Flags a failed gate/publish loudly. :latest is unchanged on failure, so
   # this is "we did NOT ship", not "we shipped something broken".
   notify-failure:
-    needs: [prepare, verify, publish]
+    needs: [prepare, verify, verify-arm64, publish]
     if: failure() && needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:

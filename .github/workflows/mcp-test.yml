@@ -4,7 +4,9 @@ name: mcp-test
 # without a logged-in Beeper account. Builds the real image and runs the MCP
 # guard matrix (tool contract + auth/Host/Origin/body 200/403/413/401) via the
 # shared scripts/mcp-guard-check.sh — the same script release.yml uses as its
-# publish gate, so the PR test and the release gate can't drift.
+# publish gate, so the PR test and the release gate can't drift. It also runs
+# the shared scripts/first-paint-check.sh (fresh profile -> Beeper's login
+# window actually renders), the same script release.yml uses.
 #
 # Triggers: workflow_dispatch (on demand) + pull_request on the files that
 # affect the built image or the check itself.
@@ -18,6 +20,9 @@ on:
       - 'docker-compose.yml'
       - 'scripts/mcp-guard-check.sh'
       - 'scripts/asset-serve-check.js'
+      - 'scripts/first-paint-check.sh'
+      - 'scripts/vnc-paint-probe.py'
+      - 'scripts/rfb.py'
       - '.github/workflows/mcp-test.yml'
 
 permissions:
@@ -63,3 +68,6 @@ jobs:
 
       - name: MCP guard matrix
         run: bash scripts/mcp-guard-check.sh beeperbox:mcp-test
+
+      - name: First-paint gate (fresh profile -> login screen renders)
+        run: bash scripts/first-paint-check.sh beeperbox:mcp-test

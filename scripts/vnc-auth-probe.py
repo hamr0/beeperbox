@@ -15,29 +15,21 @@ Usage:  vnc-auth-probe.py <host> <port>
 Prints the offered type numbers space-separated (e.g. "2"); exits non-zero
 if the peer isn't an RFB server or refuses the handshake.
 """
-import socket
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rfb  # noqa: E402  (sibling module, shared handshake)
 
 
 def probe(host: str, port: int) -> list[int]:
-    with socket.create_connection((host, port), timeout=5) as s:
-        version = s.recv(12)
-        if not version.startswith(b"RFB "):
-            print(f"not an RFB server, got: {version!r}", file=sys.stderr)
-            sys.exit(2)
-        s.sendall(b"RFB 003.008\n")
-        first = s.recv(1)
-        if not first:
-            print("no security-type count byte received", file=sys.stderr)
-            sys.exit(2)
-        count = first[0]
-        if count == 0:
-            reason_len = int.from_bytes(s.recv(4), "big")
-            reason = s.recv(reason_len)
-            print(f"server refused handshake: {reason!r}", file=sys.stderr)
-            sys.exit(2)
-        types = list(s.recv(count))
-        return types
+    try:
+        s, types = rfb.connect(host, port, timeout=5)
+    except rfb.RfbError as e:
+        print(e, file=sys.stderr)
+        sys.exit(2)
+    s.close()
+    return types
 
 
 if __name__ == "__main__":

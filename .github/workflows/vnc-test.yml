@@ -13,6 +13,7 @@ on:
     paths:
       - 'entrypoint.sh'
       - 'scripts/vnc-auth-probe.py'
+      - 'scripts/rfb.py'
       - 'scripts/vnc-auth-check.sh'
       - '.github/workflows/vnc-test.yml'
 

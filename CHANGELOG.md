@@ -12,19 +12,19 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
+## [0.9.1] — 2026-09-30 `[PATCH]`
+
+First-paint fix for Beeper 4.3.123 (issue #27) plus the gate that would have caught it, alongside repository hygiene and documentation. PATCH per the versioning policy: a launch-flag bug fix and CI/release-workflow changes — no tool was added or removed, and the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched; the repository-hygiene and documentation entries below do not change the running container.
 
 ### Fixed
 
+- **Container launched Beeper 4.3.123 to a blank screen — window created but never mapped, login screen never rendered, one-time noVNC login impossible on a fresh install (issue #27, reported by @danielcarzani).** Cause: from 4.3.123 the renderer stalls on Chromium's default software-GL fallback under Xvfb; `--disable-gpu` and `--disable-gpu-compositing` don't help. Fix: `entrypoint.sh` launches with `--use-angle=swiftshader` (SwiftShader ships inside the AppImage; no new packages). Verified on 4.3.123 and 4.2.923.
+- **New release/PR gate `scripts/first-paint-check.sh` (+ `scripts/vnc-paint-probe.py`): boots the image on a fresh profile and reads the framebuffer over VNC from the host; a blank screen fails.** Why: the API comes up even when nothing paints, so HEALTHCHECK + the MCP guard matrix passed and the weekly cron published an image nobody could log in to. It passes only when two consecutive samples show at least 1000 distinct colours (observed: blank screen 2, mid-paint frame ~330, settled login screen ~11,300; `FIRST_PAINT_MIN_COLOURS` overrides). A probe that cannot read the screen (e.g. an image run with `VNC_PASSWORD`) now fails with its own error instead of being reported as a blank screen, and each run uses a unique container name and a docker-assigned loopback port, so concurrent runs no longer collide. Wired into `mcp-test.yml` and `release.yml`: `verify` runs it on amd64, and a new `verify-arm64` job runs it on a native `ubuntu-24.04-arm` runner; `publish` waits on both. **The arm64 leg has not run yet — its first execution will be the next release, cron rebuild, or dispatch.** The RFB handshake shared by the two VNC probes now lives in `scripts/rfb.py` (`vnc-auth-probe.py` behaves identically).
 - **Publish workflow pinned to `npm@11` — npm 12.0.0's `npm publish --provenance` is broken.** The job ran `npm install -g npm@latest`, which started resolving to npm 12.0.0 (released 2026-07-09) on the Node 22 runner. npm 12's `libnpmpublish` provenance code does `require('sigstore')`, but the tarball bundles only the `@sigstore/*` scoped packages — so `--provenance` dies with `MODULE_NOT_FOUND` and the publish fails outright. npm@11 bundles `sigstore` and publishes fine. Pinned to the major rather than floating on `@latest`. Revisit once npm ships a provenance fix. CI only — no runtime or published-artifact change.
 
 ### Changed
 
 - **Agent/IDE scratch is gitignored and de-tracked (`.claude/`, `.litectx/`, `.idea/`).** Per-machine agent and IDE state is no part of the package — it regenerates locally and only added noise and churn. Now ignored, and any already-committed copies removed from tracking (local files kept on disk). Functional dot-paths (`.github/`, `.gitignore`, `.npmignore`, `.mcp.json`) stay tracked. Repo hygiene only.
-
-Repository hygiene and agent-facing documentation. **Nothing here changes the running container**: the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched, so no version has been minted. These notes fold into whatever release ships next.
-
-### Changed
 
 - **`.gitignore` now default-denies every dot-directory** (`.*/`) and re-admits only `.github/`, replacing the per-directory list (`.claude/`, `.litectx/`, `.idea/`, `.barebrowse/`). Each new agent/IDE/tooling scratch dir previously had to be chased with its own line — and one (`.barebrowse/`, from browser-automation page snapshots) was only caught after the fact. Default-deny closes that gap.
 

@@ -42,10 +42,16 @@ echo "[ok] novnc -> http://localhost:6080/vnc.html"
 
 echo "[..] starting beeper desktop"
 # do not pass --disable-gpu: recent beeper builds bail in their crash-reporter
-# init when the gpu process is disabled, leaving a black vnc screen. instead
-# we ship libgl1-mesa-dri so electron falls back to software gl via mesa.
+# init when the gpu process is disabled, leaving a black vnc screen.
+#
+# --use-angle=swiftshader pins software GL to the SwiftShader that ships inside
+# the AppImage. We used to leave the backend to chromium's own fallback (mesa
+# via libgl1-mesa-dri), but from beeper 4.3.123 that path stalls the renderer
+# under Xvfb: the window is created and never mapped, so the login screen never
+# paints — while the API still comes up and the healthcheck stays green (#27).
+# scripts/first-paint-check.sh is the gate for this.
 launch_beeper() {
-  /opt/beeper/beepertexts --no-sandbox --disable-dev-shm-usage 2>&1 &
+  /opt/beeper/beepertexts --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader 2>&1 &
   BEEPER_PID=$!
 }
 launch_beeper
