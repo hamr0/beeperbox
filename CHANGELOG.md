@@ -12,11 +12,9 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly to pick up upstream Beeper AppImage drift), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
-
 ## [0.9.1] — 2026-09-30 `[PATCH]`
 
-First-paint fix for Beeper 4.3.123 (issue #27) plus the gate that would have caught it, alongside repository hygiene and documentation. PATCH per the versioning policy: a launch-flag bug fix and CI/release-workflow changes — no tool was added or removed, and the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched.
+First-paint fix for Beeper 4.3.123 (issue #27) plus the gate that would have caught it, alongside repository hygiene and documentation. PATCH per the versioning policy: a launch-flag bug fix and CI/release-workflow changes — no tool was added or removed, and the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched; the repository-hygiene and documentation entries below do not change the running container.
 
 ### Fixed
 
@@ -27,10 +25,6 @@ First-paint fix for Beeper 4.3.123 (issue #27) plus the gate that would have cau
 ### Changed
 
 - **Agent/IDE scratch is gitignored and de-tracked (`.claude/`, `.litectx/`, `.idea/`).** Per-machine agent and IDE state is no part of the package — it regenerates locally and only added noise and churn. Now ignored, and any already-committed copies removed from tracking (local files kept on disk). Functional dot-paths (`.github/`, `.gitignore`, `.npmignore`, `.mcp.json`) stay tracked. Repo hygiene only.
-
-Repository hygiene and agent-facing documentation. **Nothing in the entries below changes the running container**: the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched.
-
-### Changed
 
 - **`.gitignore` now default-denies every dot-directory** (`.*/`) and re-admits only `.github/`, replacing the per-directory list (`.claude/`, `.litectx/`, `.idea/`, `.barebrowse/`). Each new agent/IDE/tooling scratch dir previously had to be chased with its own line — and one (`.barebrowse/`, from browser-automation page snapshots) was only caught after the fact. Default-deny closes that gap.
 
