@@ -6,7 +6,8 @@ name: mcp-test
 # shared scripts/mcp-guard-check.sh — the same script release.yml uses as its
 # publish gate, so the PR test and the release gate can't drift. It also runs
 # the shared scripts/first-paint-check.sh (fresh profile -> Beeper's login
-# window actually renders), the same script release.yml uses.
+# window actually renders), the same script release.yml uses. The image is built
+# with the Beeper version pinned in beeper-version.txt, the same pin releases use.
 #
 # Triggers: workflow_dispatch (on demand) + pull_request on the files that
 # affect the built image or the check itself.
@@ -23,6 +24,9 @@ on:
       - 'scripts/first-paint-check.sh'
       - 'scripts/vnc-paint-probe.py'
       - 'scripts/rfb.py'
+      - 'beeper-version.txt'
+      - 'scripts/pinned-beeper-version.sh'
+      - 'scripts/beeper-artifacts-lib.sh'
       - '.github/workflows/mcp-test.yml'
 
 permissions:
@@ -53,6 +57,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Same pin as releases and :edge: build exactly the Beeper in
+      # beeper-version.txt, so the PR gate tests what ships.
+      - name: Read pinned Beeper version
+        id: beeper
+        run: |
+          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -63,6 +79,7 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: beeperbox:mcp-test
+          build-args: BEEPER_VERSION=${{ steps.beeper.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

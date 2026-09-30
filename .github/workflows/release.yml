@@ -5,7 +5,7 @@ name: release
 # pulled by the weekly rebuild) can't silently become :latest.
 #
 # Flow for the release path (tag push / weekly cron / manual dispatch):
-#   prepare  -> resolve which ref to build
+#   prepare  -> resolve which ref to build + read its pinned Beeper (beeper-version.txt)
 #   verify   -> build amd64, run the MCP + VNC guard checks and the first-paint check (the gate)
 #   verify-arm64 -> build arm64 natively (ubuntu-24.04-arm), run the first-paint check only
 #               (the renderer/GL path is per-arch; the other gates stay amd64-only)
@@ -18,7 +18,7 @@ name: release
 #
 # Triggers:
 #   - tag push (v*.*.*)        -> :X.Y.Z, :X.Y, :X, :latest (gated)
-#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag, refresh Beeper (gated)
+#   - weekly cron (Mon 06 UTC) -> rebuild newest release tag at its pinned Beeper (gated)
 #   - manual dispatch          -> ad-hoc gated rebuild of newest release tag
 #   - push to master           -> :edge (bleeding-edge, ungated by design)
 
@@ -63,19 +63,43 @@ jobs:
             echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Resolve "latest stable" Beeper ONCE per run and pin it for every build
-      # below. Without this the Dockerfile's never-changing stable URL let the
-      # GHA build cache reuse a stale download, and verify/publish could build
-      # different Beeper versions. The script comes from the workflow ref
-      # (latest), like the other test tooling.
-      - name: Checkout resolver script (latest workflow ref)
+      # The Beeper version is PINNED in beeper-version.txt and read from the
+      # RELEASE ref (the tag being built), not the workflow ref: each tag carries
+      # its own Beeper, so the weekly rebuild of a tag is reproducible and :latest
+      # never jumps to an unvetted Beeper. Newer Beepers are offered separately as
+      # :next (beeper-next.yml) and promoted by changing the pin in a PR. Fails
+      # closed: a ref without the pin file fails prepare (no fall back to latest
+      # stable). The script comes from the workflow ref (latest), like the other
+      # test tooling; the pin file from the release ref, checked out to a side
+      # path (same pattern as .ci-tools in the gate jobs).
+      - name: Checkout pin script (latest workflow ref)
         if: steps.ref.outputs.skip != 'true'
         uses: actions/checkout@v6
 
-      - name: Resolve Beeper version
+      - name: Checkout release ref (for its Beeper pin)
+        if: steps.ref.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          path: .release-ref
+
+      - name: Read pinned Beeper version
         id: beeper
         if: steps.ref.outputs.skip != 'true'
-        run: echo "version=$(bash scripts/resolve-beeper-version.sh)" >> "$GITHUB_OUTPUT"
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          pin=".release-ref/beeper-version.txt"
+          if [ ! -f "$pin" ]; then
+            echo "::error::Release ref $REF has no beeper-version.txt; refusing to fall back to latest stable Beeper. Add the pin file in a release that includes it."
+            exit 1
+          fi
+          v="$(bash scripts/pinned-beeper-version.sh "$pin")"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
   # The gate: build the candidate image and run the same checks the PRs run.
   # Nothing here pushes to GHCR.
@@ -307,7 +331,6 @@ jobs:
             echo ""
             echo "After the fix, close this issue; the next failure will then open a fresh one."
           } > "$BODY"
-          sed -i 's/^          //' "$BODY"
 
           gh label create release-gate-failed --color B60205 \
             --description "A release workflow run failed its gate or publish" --force
@@ -332,11 +355,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Same pin as the release path (see prepare): resolve stable once and
-      # pass it as a build-arg so the build cache refreshes when Beeper changes.
-      - name: Resolve Beeper version
+      # Same pin file as the release path (see prepare), read from the checked-out
+      # master tree; passed as a build-arg so the build cache refreshes when the
+      # pin changes.
+      - name: Read pinned Beeper version
         id: beeper
-        run: echo "version=$(bash scripts/resolve-beeper-version.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
+          if [ -z "$v" ]; then
+            echo "::error::Pinned Beeper version resolved empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4

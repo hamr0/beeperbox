@@ -215,9 +215,10 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 |---|---|
 | `:X.Y.Z` | exact release (rebuilt by weekly cron only while it's the newest — *not* immutable; pin a `@sha256:` digest for bit-exact) |
 | `:X.Y` / `:X` | rolling within a minor / major (`:0` today) |
-| `:latest` | newest gated release; rebuilt weekly to pick up upstream Beeper AppImage drift |
+| `:latest` | newest gated release; rebuilt weekly at its pinned Beeper (`beeper-version.txt`, read from the release ref) |
 | `:previous` | the prior `:latest` — instant rollback via `BEEPERBOX_IMAGE_TAG=previous` |
-| `:edge` | every push to `master`; **ungated, may break** |
+| `:edge` | every push to `master` (at the pinned Beeper); **ungated, may break** |
+| `:next` / `:next-beeper-<ver>` | master built with the newest stable Beeper, published only after the amd64 + arm64 gates pass (`beeper-next.yml`); promote by changing `beeper-version.txt` and tagging a release |
 
 **CI-gated releases with rollback (safe rolling releases).** The release pipeline is `prepare → verify → publish`:
 

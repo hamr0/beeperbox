@@ -15,11 +15,15 @@
 # the version, then confirm the pinned x86_64 and arm64 artifacts for that SAME
 # version both exist (HTTP 200) so a half-published release can't be pinned.
 #
-# Used by release.yml (prepare + edge). Needs curl.
+# Used by beeper-next.yml (finds the newest stable to offer as :next). Releases,
+# :edge and PRs use the pinned beeper-version.txt instead (pinned-beeper-version.sh).
+# The artifact check is shared via beeper-artifacts-lib.sh. Needs curl.
 set -euo pipefail
 
+# shellcheck source=scripts/beeper-artifacts-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/beeper-artifacts-lib.sh"
+
 STABLE_URL="https://api.beeper.com/desktop/download/linux/x64/stable/com.automattic.beeper.desktop"
-BUILDS_URL="https://beeper-desktop.download.beeper.com/builds"
 
 final=$(curl -sIL --retry 3 -o /dev/null -w '%{url_effective}' "$STABLE_URL") \
   || { echo "resolve-beeper-version: could not fetch $STABLE_URL" >&2; exit 1; }
@@ -31,13 +35,6 @@ else
   exit 1
 fi
 
-for arch in x86_64 arm64; do
-  url="$BUILDS_URL/Beeper-${version}-${arch}.AppImage"
-  code=$(curl -sIL --retry 3 -o /dev/null -w '%{http_code}' "$url") || code=000
-  if [ "$code" != "200" ]; then
-    echo "resolve-beeper-version: $url returned HTTP $code (expected 200)" >&2
-    exit 1
-  fi
-done
+beeper_check_artifacts "$version" resolve-beeper-version || exit 1
 
 echo "$version"

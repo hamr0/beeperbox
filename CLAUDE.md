@@ -134,7 +134,8 @@ third, and `release.yml` runs all three in its verify job (plus the first-paint 
 runner, `verify-arm64`). The two VNC probes share the RFB handshake in `scripts/rfb.py`. What blocks a PR and what blocks a release are identical by design.
 
 - **GHCR** — push a `v*` tag → `release.yml` (prepare → verify → publish), multi-arch amd64+arm64,
-  rolls `:latest` → `:previous`. Weekly cron rebuild picks up new Beeper Desktop stable: CI resolves it once per run with `scripts/resolve-beeper-version.sh` and pins it as `BEEPER_VERSION` (otherwise the GHA build cache reuses a stale download).
+  rolls `:latest` → `:previous`. The Beeper version is **pinned in `beeper-version.txt`** (read via `scripts/pinned-beeper-version.sh`): releases read it from the release ref (so each tag carries its own; a ref without the file fails `prepare`), `:edge` and the PR gate read it from the tree, and it is passed as `BEEPER_VERSION` (otherwise the GHA build cache reuses a stale download). The weekly cron rebuilds the newest tag at its own pin.
+  **`:next`** — `beeper-next.yml` (weekly + manual) builds master with the newest stable Beeper (`scripts/resolve-beeper-version.sh`) when it differs from the pin, runs the gates, and publishes `:next` / `:next-beeper-<ver>`, opening a `beeper-update` issue. To promote a Beeper: change `beeper-version.txt` in a PR, merge, tag a release.
   A failed run (gate or publish) opens or comments on a `release-gate-failed` issue assigned to the owner (`notify-failure`).
 - **npm** — `gh workflow run publish.yml --ref master`. OIDC trusted publishing, **no `NPM_TOKEN`**,
   idempotent. There is no npm auth in an agent session; npm publishes *only* through that workflow.
