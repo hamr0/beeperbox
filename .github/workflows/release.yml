@@ -6,7 +6,7 @@ name: release
 #
 # Flow for the release path (tag push / weekly cron / manual dispatch):
 #   prepare  -> resolve which ref to build
-#   verify   -> build amd64, run the MCP + VNC guard checks (the gate)
+#   verify   -> build amd64, run the MCP + VNC guard checks and the first-paint check (the gate)
 #   publish  -> roll current :latest to :previous, then build+push multi-arch
 #               semver tags + :latest  (only runs if verify passed)
 # If verify fails, publish is skipped: the previous :latest stays live as the
@@ -96,6 +96,9 @@ jobs:
 
       - name: MCP guard gate
         run: bash .ci-tools/scripts/mcp-guard-check.sh beeperbox:candidate
+
+      - name: First-paint gate
+        run: bash .ci-tools/scripts/first-paint-check.sh beeperbox:candidate
 
       - name: Install Xvfb + x11vnc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc

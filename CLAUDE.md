@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 <!-- AGENT_RULES:START -->
 Consult when building something new or adding a feature — a standards guide, not hot
 context like MEMORY.md above:
-@.claude/remember/AGENT_RULES.md
+.claude/remember/AGENT_RULES.md
 <!-- AGENT_RULES:END -->
 
 ---
@@ -36,6 +36,9 @@ node scripts/asset-serve-check.js
 
 # MCP tool-contract + HTTP guard matrix (200/403/413/401) — needs docker
 bash scripts/mcp-guard-check.sh beeperbox:dev
+
+# First-paint gate: fresh profile -> Beeper's login window actually renders — needs docker + python3
+bash scripts/first-paint-check.sh beeperbox:dev
 
 # x11vnc auth posture (RFB security types) — needs xvfb + x11vnc
 bash scripts/vnc-auth-check.sh
@@ -118,11 +121,16 @@ wedges Xvfb (previously only `docker rm` recovered), and it supervises `beeperte
 dies, MCP and the forwarder stay up and keep *answering* while every tool call fails, so the
 supervisor must catch it. It also traps SIGTERM to let Beeper flush Matrix sync / checkpoint SQLite.
 
+Beeper is launched with `--use-angle=swiftshader`: from Beeper 4.3.123 Chromium's default GL
+fallback stalls the renderer under Xvfb (window never maps, login screen never paints) while the API
+still comes up and the healthcheck stays green. `--disable-gpu` does not help. Do not remove the
+flag; `scripts/first-paint-check.sh` is the gate.
+
 ## CI and release
 
-`scripts/mcp-guard-check.sh` and `scripts/vnc-auth-check.sh` are the **single source of truth** for
-the gates — `mcp-test.yml` / `vnc-test.yml` run them on PRs, and `release.yml` runs the same scripts
-in its verify job. What blocks a PR and what blocks a release are identical by design.
+`scripts/mcp-guard-check.sh`, `scripts/first-paint-check.sh` and `scripts/vnc-auth-check.sh` are the
+**single source of truth** for the gates — `mcp-test.yml` runs the first two, `vnc-test.yml` the
+third, and `release.yml` runs all three in its verify job. What blocks a PR and what blocks a release are identical by design.
 
 - **GHCR** — push a `v*` tag → `release.yml` (prepare → verify → publish), multi-arch amd64+arm64,
   rolls `:latest` → `:previous`. Weekly cron rebuild picks up new Beeper Desktop stable.

@@ -221,7 +221,7 @@ beeperbox is a single-tenant container that holds a credential (`BEEPER_TOKEN`) 
 
 **CI-gated releases with rollback (safe rolling releases).** The release pipeline is `prepare → verify → publish`:
 
-- `verify` builds the image and runs the shared guard scripts (`scripts/mcp-guard-check.sh` — MCP tool contract + `200`/`403`/`413`/`401` matrix; `scripts/vnc-auth-check.sh` + `vnc-auth-probe.py` — RFB security-type probe) against it.
+- `verify` builds the image and runs the shared guard scripts (`scripts/mcp-guard-check.sh` — MCP tool contract + `200`/`403`/`413`/`401` matrix; `scripts/first-paint-check.sh` + `vnc-paint-probe.py` — fresh-profile first-window render check over VNC; `scripts/vnc-auth-check.sh` + `vnc-auth-probe.py` — RFB security-type probe) against it.
 - `publish` runs **only if `verify` is green**. It first rolls the current `:latest` → `:previous` (server-side manifest copy, no rebuild), then builds & pushes the multi-arch tags. A failed gate **skips publish** (last-known-good `:latest` stays live) and flags the run.
 - The guard scripts are the **single source of truth** shared by the PR workflows (`mcp-test`, `vnc-test`) and the release gate, so "what the PR tests" and "what blocks a release" cannot drift. The gate sources scripts from the **latest workflow ref** (not the release ref), so the weekly rebuild of an older tag that predates the scripts still runs current checks.
 

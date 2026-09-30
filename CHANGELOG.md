@@ -16,6 +16,8 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ### Fixed
 
+- **Container launched Beeper 4.3.123 to a blank screen — window created but never mapped, login screen never rendered, one-time noVNC login impossible on a fresh install (issue #27, reported by @danielcarzani).** Cause: from 4.3.123 the renderer stalls on Chromium's default software-GL fallback under Xvfb; `--disable-gpu` and `--disable-gpu-compositing` don't help. Fix: `entrypoint.sh` launches with `--use-angle=swiftshader` (SwiftShader ships inside the AppImage; no new packages). Verified on 4.3.123 and 4.2.923.
+- **New release/PR gate `scripts/first-paint-check.sh` (+ `scripts/vnc-paint-probe.py`): boots the image on a fresh profile and reads the framebuffer over VNC from the host; a blank screen fails.** Why: the API comes up even when nothing paints, so HEALTHCHECK + the MCP guard matrix passed and the weekly cron published an image nobody could log in to. Wired into `mcp-test.yml` and `release.yml` verify.
 - **Publish workflow pinned to `npm@11` — npm 12.0.0's `npm publish --provenance` is broken.** The job ran `npm install -g npm@latest`, which started resolving to npm 12.0.0 (released 2026-07-09) on the Node 22 runner. npm 12's `libnpmpublish` provenance code does `require('sigstore')`, but the tarball bundles only the `@sigstore/*` scoped packages — so `--provenance` dies with `MODULE_NOT_FOUND` and the publish fails outright. npm@11 bundles `sigstore` and publishes fine. Pinned to the major rather than floating on `@latest`. Revisit once npm ships a provenance fix. CI only — no runtime or published-artifact change.
 
 ### Changed
