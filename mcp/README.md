@@ -67,16 +67,13 @@ There's no Docker restart policy in lite mode. For an always-on setup, run it un
 
 See the [full README](https://github.com/hamr0/beeperbox#the-mcp) and [docs/GUIDE.md](https://github.com/hamr0/beeperbox/blob/master/docs/GUIDE.md) for the complete tool reference and the container build.
 
-## The bare ecosystem
+## bare suite
 
-Local-first, composable agent infrastructure. Same API patterns throughout — mix and match, each module works standalone.
+- **Hands** · [barebrowse](https://github.com/hamr0/barebrowse) · [baremobile](https://github.com/hamr0/baremobile) · **beeperbox**
+- **Rails** · [bareagent](https://github.com/hamr0/bareagent) · [bareguard](https://github.com/hamr0/bareguard) · [barebox](https://github.com/hamr0/barebox) · [litectx](https://github.com/hamr0/litectx)
+- **Apps** · [fwdloop](https://github.com/hamr0/fwdloop) · [bareloop](https://github.com/hamr0/bareloop)
 
-- **[bareagent](https://npmjs.com/package/bare-agent)** — the think→act→observe loop. *Goal in → coordinated actions out.*
-- **[bareguard](https://npmjs.com/package/bareguard)** — the single gate every action passes through. *Action in → allow / deny / ask-a-human out.*
-- **[litectx](https://npmjs.com/package/litectx)** — code + memory graph with activation decay. *Query in → ranked context out.*
-- **[barebrowse](https://npmjs.com/package/barebrowse)** — a real browser for agents. *URL in → pruned snapshot out.*
-- **[baremobile](https://npmjs.com/package/baremobile)** — Android + iOS device control. *Screen in → pruned snapshot out.*
-- **beeperbox** *(this)* — 50+ messaging networks via one MCP server. *Chat in → unified message stream out.*
+Pairs well with [bareguard](https://github.com/hamr0/bareguard) (ask before anything is sent). → [The whole suite](https://github.com/hamr0)
 
 ## License
 
