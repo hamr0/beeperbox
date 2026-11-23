@@ -12,6 +12,12 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the Beeper version pinned in `beeper-version.txt`), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; promote it by bumping the pin), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+### Docs
+
+- README: the suite section is now a short map of the bare suite (Hands / Rails / Apps) plus what this pairs well with, linking the full list on github.com/hamr0.
+
 ## [0.9.2] — 2026-09-30 `[PATCH]`
 
 Release-pipeline hardening: a pinned Beeper version, a gated `:next` channel, stronger release gates and failure issues, plus docs. PATCH per the versioning policy: release/packaging tooling only — no tool was added or removed, and the MCP tool set, `Chat`/`Message` schemas, HTTP API, and default ports are untouched; the running container is unchanged (the `:next` image channel is a new published tag, not new runtime behavior).
