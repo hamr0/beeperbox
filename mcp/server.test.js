@@ -734,3 +734,246 @@ test('bearer guard: only the exact `Bearer <token>` header is accepted (401 for 
     }
   } finally { child.kill(); }
 });
+
+// ── webhook (opt-in ping mode) ────────────────────────────────────
+const WH_KEY_B64 = Buffer.from('super-secret-key-bytes').toString('base64');
+const whEnv = (o) => ({ BEEPERBOX_WEBHOOK_URL: 'https://hooks.example.com/x?token=abc', BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + WH_KEY_B64, ...o });
+
+test('webhook config: unset or empty URL is off', () => {
+  assert.equal(S.webhookConfig({}).enabled, false);
+  assert.equal(S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: '' }).enabled, false);
+});
+
+test('webhook config: http to a non-loopback host is rejected', () => {
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_URL: 'http://hooks.example.com/x' })), /https/);
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_URL: 'not a url' })), /valid URL/);
+});
+
+test('webhook config: https without a secret is rejected; loopback http without one is allowed', () => {
+  assert.throws(() => S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: 'https://hooks.example.com/x' }), /SECRET is required/);
+  for (const u of ['http://127.0.0.1:9/x', 'http://localhost:9/x', 'http://[::1]:9/x']) {
+    const c = S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: u });
+    assert.equal(c.enabled, true);
+    assert.equal(c.key, null);
+  }
+});
+
+test('webhook config: secret is base64-decoded (prefix optional); empty decode is invalid', () => {
+  const k = Buffer.from('super-secret-key-bytes');
+  assert.ok(S.webhookConfig(whEnv({})).key.equals(k));
+  assert.ok(S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: WH_KEY_B64 })).key.equals(k));
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: 'whsec_' })), /SECRET/);
+});
+
+test('webhook config: interval default, clamp to 1000, non-numeric -> default; host hides path/query', () => {
+  assert.equal(S.webhookConfig(whEnv({})).interval, 10000);
+  const c = S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_INTERVAL_MS: '50' }));
+  assert.equal(c.interval, 1000);
+  assert.equal(c.notes.length, 1);
+  assert.equal(S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_INTERVAL_MS: 'abc' })).interval, 10000);
+  assert.equal(c.host, 'https://hooks.example.com');
+});
+
+test('webhook config: mode defaults to ping; a bad mode is rejected', () => {
+  assert.equal(S.webhookConfig(whEnv({})).mode, 'ping');
+  assert.equal(S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_MODE: 'full' })).mode, 'full');
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_MODE: 'loud' })), /MODE/);
+});
+
+test('webhook state path: override env, else next to the sent-ledger', () => {
+  const sv = { s: process.env.BEEPERBOX_WEBHOOK_STATE, l: process.env.BEEPERBOX_SENT_LEDGER };
+  try {
+    delete process.env.BEEPERBOX_WEBHOOK_STATE;
+    process.env.BEEPERBOX_SENT_LEDGER = '/tmp/zz/sent-ledger.json';
+    assert.equal(S.webhookStatePath(), '/tmp/zz/webhook-state.json');
+    process.env.BEEPERBOX_WEBHOOK_STATE = '/tmp/other/s.json';
+    assert.equal(S.webhookStatePath(), '/tmp/other/s.json');
+  } finally {
+    for (const [k, v] of [['BEEPERBOX_WEBHOOK_STATE', sv.s], ['BEEPERBOX_SENT_LEDGER', sv.l]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
+// Harness: scripted pollMessages results, recorded posts/saves.
+function whHarness({ polls = [], statuses = [], mode = 'ping' } = {}) {
+  const h = { posts: [], saves: [], logs: [], polls: [...polls], statuses: [...statuses], clock: 1_700_000_000_000 };
+  h.deps = {
+    mode, interval: 1000, host: 'https://hooks.example.com',
+    pollMessages: async (a) => { h.pollArgs = a; const r = h.polls.shift(); if (r instanceof Error) throw r; return r; },
+    post: async (p) => {
+      h.posts.push({ ...p });
+      const s = h.statuses.shift();
+      if (s instanceof Error) throw s;
+      return s === undefined ? 200 : s;
+    },
+    save: (s) => h.saves.push(JSON.parse(JSON.stringify(s))),
+    now: () => h.clock,
+    log: (m) => h.logs.push(m),
+  };
+  return h;
+}
+const wm = (id, chat, ts, extra) => ({ id, chat_id: chat, network: 'whatsapp', text: 'SECRET TEXT', timestamp: ts, source: 'external', attachments: [{ src_url: 'file:///x' }], sender: { id: 's', name: 'Bob', is_self: false }, ...extra });
+
+test('webhook seed: saves the cursor and POSTs nothing', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C0', messages: [], seeded: true }] });
+  const st = { cursor: null, pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.equal(h.posts.length, 0);
+  assert.deepEqual(h.pollArgs, {});
+  assert.equal(h.saves.at(-1).cursor, 'C0');
+});
+
+test('webhook seed error: cursor stays unset and the next tick re-seeds (no empty-cursor fallback)', async () => {
+  const h = whHarness({ polls: [new Error('boom'), { cursor: 'C0', messages: [] }] });
+  const st = { cursor: null, pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, null);
+  assert.equal(h.posts.length, 0);
+  assert.equal(h.saves.length, 0);
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.deepEqual(h.pollArgs, {});
+});
+
+test('webhook ping: new messages -> exactly one POST, ids/counts only, no text', async () => {
+  const msgs = [wm('a', 'c1', '2026-01-01T00:00:01Z'), wm('b', 'c1', '2026-01-01T00:00:05Z'), wm('c', 'c2', '2026-01-01T00:00:03Z')];
+  const h = whHarness({ polls: [{ cursor: 'C1', messages: msgs, has_more: false }] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 1);
+  assert.deepEqual(h.pollArgs, { cursor: 'C0', limit: 100 });
+  const body = JSON.parse(h.posts[0].body);
+  assert.equal(body.type, 'messages.new');
+  assert.equal(body.timestamp, new Date(h.clock).toISOString());
+  assert.deepEqual(body.data.chats, [
+    { chat_id: 'c1', network: 'whatsapp', count: 2, latest_at: '2026-01-01T00:00:05Z', message_ids: ['a', 'b'] },
+    { chat_id: 'c2', network: 'whatsapp', count: 1, latest_at: '2026-01-01T00:00:03Z', message_ids: ['c'] },
+  ]);
+  assert.equal(body.data.messages, undefined);
+  assert.ok(!h.posts[0].body.includes('SECRET TEXT'));
+  assert.ok(!h.posts[0].body.includes('"text"'));
+  assert.ok(!h.posts[0].body.includes('Bob'));
+  assert.match(h.posts[0].id, /^msg_/);
+  assert.equal(st.cursor, 'C1');
+  assert.equal(st.pending, null);
+});
+
+test('webhook full: data.messages carries the normalized messages', async () => {
+  const msgs = [wm('a', 'c1', '2026-01-01T00:00:01Z')];
+  const h = whHarness({ mode: 'full', polls: [{ cursor: 'C1', messages: msgs }] });
+  await S.webhookTick({ cursor: 'C0', pending: null, failures: 0 }, h.deps);
+  assert.deepEqual(JSON.parse(h.posts[0].body).data.messages, msgs);
+});
+
+test('webhook echo-guard: an api-only batch POSTs nothing but advances the cursor; api msgs are dropped from mixed batches', async () => {
+  const h = whHarness({ polls: [
+    { cursor: 'C1', messages: [wm('a', 'c1', 't', { source: 'api' })] },
+    { cursor: 'C2', messages: [wm('b', 'c1', 't', { source: 'api' }), wm('c', 'c1', 't')] },
+  ] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 0);
+  assert.equal(st.cursor, 'C1');
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 1);
+  assert.deepEqual(JSON.parse(h.posts[0].body).data.chats[0].message_ids, ['c']);
+});
+
+test('webhook retry: 500 then 200 reuses the same webhook-id, holds the cursor, grows the backoff', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C1', messages: [wm('a', 'c1', 't')] }], statuses: [500, 500, 200] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  const d1 = await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.ok(st.pending);
+  assert.equal(d1, 2000);
+  const d2 = await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.equal(d2, 4000);
+  const d3 = await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 3);
+  assert.equal(new Set(h.posts.map((p) => p.id)).size, 1);
+  assert.equal(new Set(h.posts.map((p) => p.body)).size, 1);
+  assert.equal(st.cursor, 'C1');
+  assert.equal(st.pending, null);
+  assert.equal(st.failures, 0);
+  assert.equal(d3, 1000);
+  // pending was persisted BEFORE the first POST
+  assert.ok(h.saves[0].pending);
+});
+
+test('webhook backoff is capped at 300000ms', async () => {
+  const h = whHarness({ statuses: [500] });
+  const st = { cursor: 'C0', pending: { id: 'msg_x', body: '{}', next_cursor: 'C1' }, failures: 30 };
+  assert.equal(await S.webhookTick(st, h.deps), 300000);
+});
+
+test('webhook: a 3xx redirect and a network error are failures', async () => {
+  const h = whHarness({ statuses: [302, new Error('ECONNREFUSED')] });
+  const st = { cursor: 'C0', pending: { id: 'msg_x', body: '{}', next_cursor: 'C1' }, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.ok(st.pending);
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.equal(st.failures, 2);
+  assert.ok(h.logs.every((l) => !l.includes('/x')));
+});
+
+test('webhook restart: a persisted pending is retried under the same id without polling', async () => {
+  const h = whHarness({});
+  const st = { cursor: 'C0', pending: { id: 'msg_persisted', body: '{"a":1}', next_cursor: 'C9' }, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts[0].id, 'msg_persisted');
+  assert.equal(h.pollArgs, undefined);
+  assert.equal(st.cursor, 'C9');
+});
+
+test('webhook has_more: next tick is immediate after a successful POST', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C1', messages: [wm('a', 'c1', 't')], has_more: true }] });
+  assert.equal(await S.webhookTick({ cursor: 'C0', pending: null, failures: 0 }, h.deps), 0);
+});
+
+test('webhook signature matches an independent HMAC-SHA256 over id.ts.body', () => {
+  const key = Buffer.from('super-secret-key-bytes');
+  const id = 'msg_1', ts = '1700000000', body = '{"x":1}';
+  const expect = 'v1,' + require('node:crypto').createHmac('sha256', key).update(id + '.' + ts + '.' + body).digest('base64');
+  assert.equal(S.signWebhook(key, id, ts, body), expect);
+  assert.notEqual(S.signWebhook(key, id, '1700000001', body), expect);
+});
+
+test('webhook send: headers, independent signature, manual redirects, fresh timestamp per attempt', async () => {
+  const key = Buffer.from('super-secret-key-bytes');
+  const cfg = { url: 'https://hooks.example.com/x', key };
+  const pending = { id: 'msg_abc', body: '{"type":"messages.new"}' };
+  const calls = [];
+  const fakeFetch = async (url, init) => { calls.push({ url, init }); return { status: 204 }; };
+  assert.equal(await S.sendWebhook(cfg, pending, fakeFetch, () => 1_700_000_000_500), 204);
+  await S.sendWebhook(cfg, pending, fakeFetch, () => 1_700_000_007_000);
+  const [a, b] = calls.map((c) => c.init);
+  assert.equal(a.method, 'POST');
+  assert.equal(a.redirect, 'manual');
+  assert.ok(a.signal);
+  assert.equal(a.body, pending.body);
+  assert.equal(a.headers['content-type'], 'application/json');
+  assert.equal(a.headers['webhook-id'], 'msg_abc');
+  assert.equal(a.headers['webhook-timestamp'], '1700000000');
+  assert.equal(b.headers['webhook-timestamp'], '1700000007');
+  assert.equal(b.headers['webhook-id'], 'msg_abc');
+  const expect = 'v1,' + require('node:crypto').createHmac('sha256', key).update(`msg_abc.1700000000.${pending.body}`).digest('base64');
+  assert.equal(a.headers['webhook-signature'], expect);
+  assert.notEqual(b.headers['webhook-signature'], a.headers['webhook-signature']);
+  // no secret -> no signature header
+  await S.sendWebhook({ url: cfg.url, key: null }, pending, fakeFetch);
+  assert.equal(calls[2].init.headers['webhook-signature'], undefined);
+});
+
+test('webhook idle tick: an empty poll with an unchanged cursor does not write state', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C0', messages: [], has_more: false }] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.saves.length, 0);
+  assert.equal(h.posts.length, 0);
+  assert.equal(st.cursor, 'C0');
+});

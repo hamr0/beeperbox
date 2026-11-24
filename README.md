@@ -156,6 +156,20 @@ Not a thin proxy over Beeper's raw API — an **opinionated 12-tool verb layer**
 
 Reliable echo-suppression (`source` + the optional `client_tag` idempotency tag) means an agent on a poll loop can send *and* watch the same chat without mistaking its own messages for inbound — the wiring that lets [multis](https://github.com/hamr0/multis) drop its text-prefix hacks.
 
+### Webhook (opt-in, experimental)
+
+Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **ping** when new messages arrive (off by default; the 12 tools are unchanged). It runs an internal `poll_messages` loop with its own persisted cursor, so nothing is lost across restarts.
+
+| Env | Default | |
+|---|---|---|
+| `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to a loopback host only |
+| `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key; required unless the host is loopback |
+| `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | floor `1000` |
+| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` |
+| `BEEPERBOX_WEBHOOK_STATE` | next to the sent-ledger | cursor + in-flight batch file |
+
+Payload (one POST per batch, `source:"api"` sends excluded): `{"type":"messages.new","timestamp":…,"data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`. Delivery is **at-least-once** — the cursor advances only on a 2xx, failures retry with backoff under the same `webhook-id` — so dedupe by message id. Signed with `webhook-id` / `webhook-timestamp` / `webhook-signature` (HMAC-SHA256). Redirects are not followed; a bad config exits at startup.
+
 ## Build from source
 
 Only if you're hacking on the image itself or running air-gapped:

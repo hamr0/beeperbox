@@ -6,6 +6,7 @@
 // Stdio transport will be added once HTTP is solid.
 
 const http = require('http');
+const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
@@ -1362,16 +1363,192 @@ function startStdioTransport() {
   preflight();
 }
 
+// ─── webhook (opt-in "ping" notifications) ───────────────────────
+// Off unless BEEPERBOX_WEBHOOK_URL is set. An in-process loop drives
+// pollMessages with its OWN persisted cursor and POSTs one Standard Webhooks
+// envelope per batch. At-least-once: the cursor advances only on a 2xx, and a
+// batch is persisted as `pending` (with its webhook-id) BEFORE the POST, so a
+// restart retries the same id. Messages with source:"api" never trigger it.
+const WEBHOOK_TIMEOUT_MS = 10000;
+const WEBHOOK_MAX_BACKOFF_MS = 300000;
+const WEBHOOK_MIN_INTERVAL_MS = 1000;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', '::1', 'localhost']);
+
+// Pure: validate env → { enabled:false } | { enabled:true, ... }. Throws Error
+// with a clear message on any misconfiguration (caller fails fast).
+function webhookConfig(env) {
+  const rawUrl = env.BEEPERBOX_WEBHOOK_URL;
+  if (!rawUrl) return { enabled: false };
+  let u;
+  try { u = new URL(rawUrl); } catch { throw new Error('BEEPERBOX_WEBHOOK_URL is not a valid URL'); }
+  const loopback = LOOPBACK_HOSTS.has(u.hostname);
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) {
+    throw new Error('BEEPERBOX_WEBHOOK_URL must be https:// (http:// is allowed only for a loopback host)');
+  }
+  let key = null;
+  const secret = env.BEEPERBOX_WEBHOOK_SECRET;
+  if (secret) {
+    key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
+    if (key.length === 0) throw new Error('BEEPERBOX_WEBHOOK_SECRET decodes to an empty key (expected whsec_<base64>)');
+  } else if (!loopback) {
+    throw new Error('BEEPERBOX_WEBHOOK_SECRET is required for a non-loopback webhook URL');
+  }
+  const mode = env.BEEPERBOX_WEBHOOK_MODE || 'ping';
+  if (mode !== 'ping' && mode !== 'full') throw new Error(`BEEPERBOX_WEBHOOK_MODE must be "ping" or "full" (got "${mode}")`);
+  let interval = parseInt(env.BEEPERBOX_WEBHOOK_INTERVAL_MS || '', 10);
+  const notes = [];
+  if (!Number.isFinite(interval)) interval = 10000;
+  else if (interval < WEBHOOK_MIN_INTERVAL_MS) {
+    notes.push(`BEEPERBOX_WEBHOOK_INTERVAL_MS=${interval} is below the 1000 floor — using 1000`);
+    interval = WEBHOOK_MIN_INTERVAL_MS;
+  }
+  return { enabled: true, url: u.href, host: `${u.protocol}//${u.host}`, key, mode, interval, notes };
+}
+
+function webhookStatePath() {
+  if (process.env.BEEPERBOX_WEBHOOK_STATE) return process.env.BEEPERBOX_WEBHOOK_STATE;
+  return path.join(path.dirname(ledgerPath()), 'webhook-state.json');
+}
+
+// Standard Webhooks signature: v1,base64(HMAC-SHA256(key, "id.ts.body")).
+function signWebhook(key, id, ts, body) {
+  return 'v1,' + crypto.createHmac('sha256', key).update(`${id}.${ts}.${body}`).digest('base64');
+}
+
+// Pure: envelope for one batch. Ping mode carries ids/counts only — no text,
+// attachments or sender data. Full mode adds the normalized messages.
+function buildWebhookPayload(messages, mode, now) {
+  const byChat = new Map();
+  for (const m of messages) {
+    let c = byChat.get(m.chat_id);
+    if (!c) { c = { chat_id: m.chat_id, network: m.network, count: 0, latest_at: null, message_ids: [] }; byChat.set(m.chat_id, c); }
+    c.count++;
+    c.message_ids.push(m.id);
+    if (m.timestamp && (!c.latest_at || m.timestamp > c.latest_at)) c.latest_at = m.timestamp;
+  }
+  const data = { chats: [...byChat.values()] };
+  if (mode === 'full') data.messages = messages;
+  return { type: 'messages.new', timestamp: new Date(now).toISOString(), data };
+}
+
+// One loop step. `st` = { cursor, pending, failures }. deps = { pollMessages,
+// post(pending) → HTTP status (throws on network error), save(st), now(), mode,
+// interval, host, log }. Returns the delay (ms) before the next tick.
+async function webhookTick(st, deps) {
+  const { interval } = deps;
+  let hasMore = false;
+  if (!st.cursor) {
+    // Never fall back to an empty cursor: a failed seed just retries.
+    try {
+      const r = await deps.pollMessages({});
+      st.cursor = r.cursor;
+      deps.save(st);
+    } catch (e) {
+      deps.log(`seed failed: ${e.message}`);
+    }
+    return interval;
+  }
+  if (!st.pending) {
+    let r;
+    try {
+      r = await deps.pollMessages({ cursor: st.cursor, limit: 100 });
+    } catch (e) {
+      deps.log(`poll failed: ${e.message}`);
+      return interval;
+    }
+    const msgs = r.messages.filter((m) => m.source !== 'api');
+    if (msgs.length === 0) {
+      if (r.cursor !== st.cursor) { // advance past skipped api messages; no write when idle
+        st.cursor = r.cursor;
+        deps.save(st);
+      }
+      return r.has_more ? 0 : interval;
+    }
+    st.pending = {
+      id: 'msg_' + crypto.randomUUID(),
+      body: JSON.stringify(buildWebhookPayload(msgs, deps.mode, deps.now())),
+      next_cursor: r.cursor,
+    };
+    deps.save(st);
+    hasMore = !!r.has_more;
+  }
+  try {
+    const status = await deps.post(st.pending);
+    if (status >= 200 && status < 300) {
+      st.cursor = st.pending.next_cursor;
+      st.pending = null;
+      st.failures = 0;
+      deps.save(st);
+      return hasMore ? 0 : interval;
+    }
+    deps.log(`POST to ${deps.host} failed: HTTP ${status}`);
+  } catch (e) {
+    deps.log(`POST to ${deps.host} failed: ${e.name === 'TimeoutError' ? 'timeout' : e.message}`);
+  }
+  st.failures = (st.failures || 0) + 1;
+  return Math.min(interval * 2 ** st.failures, WEBHOOK_MAX_BACKOFF_MS);
+}
+
+// One POST attempt → HTTP status. Fresh timestamp per attempt; redirects are
+// NOT followed (a 3xx is a failure); bounded by a timeout.
+async function sendWebhook(cfg, pending, fetchFn = fetch, nowMs = Date.now) {
+  const ts = String(Math.floor(nowMs() / 1000));
+  const headers = { 'content-type': 'application/json', 'webhook-id': pending.id, 'webhook-timestamp': ts };
+  if (cfg.key) headers['webhook-signature'] = signWebhook(cfg.key, pending.id, ts, pending.body);
+  const res = await fetchFn(cfg.url, { method: 'POST', headers, body: pending.body, redirect: 'manual', signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
+  return res.status;
+}
+
+function startWebhookLoop(cfg) {
+  const log = (m) => process.stderr.write(`[beeperbox-mcp] webhook: ${m}\n`);
+  const file = webhookStatePath();
+  let st = { cursor: null, pending: null, failures: 0 };
+  try {
+    const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+    st = { cursor: j.cursor || null, pending: j.pending || null, failures: 0 };
+  } catch { /* no state yet → seed */ }
+  const save = (s) => {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ cursor: s.cursor, pending: s.pending }), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch (e) { log(`state persist failed (${e.code || e.message})`); }
+  };
+  const post = (pending) => sendWebhook(cfg, pending);
+  const deps = { pollMessages, post, save, now: () => Date.now(), mode: cfg.mode, interval: cfg.interval, host: cfg.host, log };
+  const run = async () => {
+    let delay = cfg.interval;
+    try { delay = await webhookTick(st, deps); } catch (e) { log(`tick error: ${e.message}`); }
+    setTimeout(run, delay);
+  };
+  setTimeout(run, 0);
+}
+
 // ─── pick transport ───────────────────────────────────────────────
 
 // Only boot a transport when run as the entrypoint (`node server.js` /
 // `--stdio`). When require()'d — by the unit tests — skip the listeners and
 // just expose the pure helpers below.
 if (require.main === module) {
+  // Validate the webhook config BEFORE booting anything: a bad config must
+  // fail fast (non-zero exit), never silently disable the feature.
+  let webhookCfg;
+  try {
+    webhookCfg = webhookConfig(process.env);
+  } catch (e) {
+    process.stderr.write(`[beeperbox-mcp] webhook config error: ${e.message}\n`);
+    process.exit(1);
+  }
   if (process.argv.includes('--stdio')) {
     startStdioTransport();
   } else {
     startHttpTransport();
+  }
+  if (webhookCfg.enabled) {
+    for (const n of webhookCfg.notes) process.stderr.write(`[beeperbox-mcp] webhook: ${n}\n`);
+    process.stderr.write(`[beeperbox-mcp] webhook on: ${webhookCfg.host} interval=${webhookCfg.interval}ms mode=${webhookCfg.mode} signing=${webhookCfg.key ? 'on' : 'off'}\n`);
+    startWebhookLoop(webhookCfg);
   }
 }
 
@@ -1385,6 +1562,12 @@ module.exports = {
   TOOL_NAMES: TOOLS.map((t) => t.name),
   BIND_ADDR,
   ledgerPath,
+  webhookConfig,
+  webhookStatePath,
+  signWebhook,
+  sendWebhook,
+  buildWebhookPayload,
+  webhookTick,
   encodeCursor,
   decodeCursor,
   isAfterCursor,

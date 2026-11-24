@@ -497,7 +497,7 @@ If you call `/v1/*` directly instead of going through the MCP tools, you inherit
 
 ## MCP tools reference
 
-beeperbox exposes 11 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
+beeperbox exposes 12 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
 
 ### The 12 tools
 
@@ -620,6 +620,26 @@ curl -s -X POST http://localhost:23375 \
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | docker exec -i beeperbox node /opt/mcp/server.js --stdio
 ```
+
+---
+
+## Webhook (opt-in, experimental)
+
+If you'd rather be woken than poll, set `BEEPERBOX_WEBHOOK_URL`. beeperbox then runs an internal `poll_messages` loop (its own cursor, persisted to `webhook-state.json` beside the sent-ledger, so it survives restarts) and POSTs one request per batch of new messages. Unset, the feature is fully off and nothing else changes.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BEEPERBOX_WEBHOOK_URL` | unset | Target. `https://`, or `http://` only for `127.0.0.1` / `::1` / `localhost`. Bad value = startup error. |
+| `BEEPERBOX_WEBHOOK_SECRET` | — | Standard Webhooks secret (`whsec_<base64>`). Required for non-loopback URLs. |
+| `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | Poll cadence; values under `1000` are raised to `1000`. |
+| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` or `full`. |
+| `BEEPERBOX_WEBHOOK_STATE` | `<ledger dir>/webhook-state.json` | State file override. |
+
+**Payload.** `{"type":"messages.new","timestamp":"…","data":{"chats":[{"chat_id","network","count","latest_at","message_ids":[…]}]}}`. In `ping` mode no text, attachments or sender data leaves beeperbox — pull what you need with `read_chat` / `poll_messages`. `full` adds `data.messages` (the normalized `Message` objects). Messages with `source:"api"` (beeperbox's own sends) never trigger it.
+
+**Delivery.** At-least-once. The batch is saved before it is sent and the cursor advances only on a 2xx; anything else (non-2xx, redirect, timeout) retries the same `webhook-id` with exponential backoff capped at 5 minutes. Dedupe by message id on the receiver. If a poll has more waiting, the next one runs immediately.
+
+**Signing.** With a secret, each request carries `webhook-id`, `webhook-timestamp` (fresh per attempt) and `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.timestamp.body")>`. Redirects are never followed. The log shows only scheme and host, never the path or query.
 
 ---
 

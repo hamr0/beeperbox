@@ -528,6 +528,15 @@ while (running) {
 
 This replaces the hand-rolled "diff `list_inbox` against last-seen, dedup, track what I've replied to" loop with one cursor the server keeps honest. The poll interval is your call — beeperbox supplies the watch *ability*, not the cadence *policy*. Passing the inbound message id as `client_tag` on the reply makes the reply self-identifying in the next poll (it comes back `source: "api"`, so the guard skips it even if the content-match heuristic misses).
 
+## Webhook (opt-in, experimental)
+
+Off unless `BEEPERBOX_WEBHOOK_URL` is set; the 12 tools and `poll_messages` are unchanged. An in-process loop polls with its own persisted cursor (`BEEPERBOX_WEBHOOK_STATE`, default `webhook-state.json` next to the sent-ledger) and POSTs one Standard Webhooks request per batch of new, non-`source:"api"` messages.
+
+- Env: `BEEPERBOX_WEBHOOK_URL` (https, or http to loopback only), `BEEPERBOX_WEBHOOK_SECRET` (`whsec_<base64>`, required unless loopback), `BEEPERBOX_WEBHOOK_INTERVAL_MS` (default 10000, floor 1000), `BEEPERBOX_WEBHOOK_MODE` (`ping` default | `full`). Invalid config exits at startup.
+- Payload: `{"type":"messages.new","timestamp","data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`; `full` adds `data.messages` (normalized Message objects). `ping` carries no text/attachments/sender.
+- At-least-once: cursor advances only on 2xx; failures (incl. 3xx, timeout) retry the same `webhook-id` with backoff (cap 300s). Dedupe by message id.
+- Signing: `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.ts.body")>`. Redirects not followed.
+
 ## Transport summary
 
 | Feature | HTTP transport | Stdio transport |
