@@ -628,3 +628,43 @@ for (const mode of ['inbox', 'chat_id']) {
     } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
   });
 }
+
+// ── bearer-token guard: accept/reject matrix over real HTTP ────────
+// Pins the accept/reject behaviour of the MCP_AUTH_TOKEN check (exact match on
+// `Bearer <token>`, nothing else) so swapping the comparison for a
+// constant-time one cannot change who gets in. Real child server, no stubs.
+test('bearer guard: only the exact `Bearer <token>` header is accepted (401 for everything else, incl. other lengths and no header)', async () => {
+  const { spawn } = require('node:child_process');
+  const net = require('node:net');
+  const port = await new Promise((resolve) => {
+    const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)); });
+  });
+  const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
+    env: { ...process.env, MCP_PORT: String(port), MCP_AUTH_TOKEN: 'ci-secret', BEEPERBOX_PREFLIGHT: '0', BEEPER_TOKEN: 'test-token' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bearer-guard test server never logged "listening"')), 5000);
+      child.stdout.on('data', (d) => { if (String(d).includes('listening')) { clearTimeout(timer); resolve(); } });
+      child.on('exit', (c) => reject(new Error(`bearer-guard test server exited early (${c})`)));
+    });
+    const status = async (headers) => (await fetch(`http://127.0.0.1:${port}/`, {
+      method: 'POST', headers, body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+    })).status;
+    const cases = [
+      ['correct token', { Authorization: 'Bearer ci-secret' }, 200],
+      ['no header', {}, 401],
+      ['empty header', { Authorization: '' }, 401],
+      ['wrong, same length', { Authorization: 'Bearer ci-secreX' }, 401],
+      ['wrong, shorter', { Authorization: 'Bearer ci-' }, 401],
+      ['wrong, longer', { Authorization: 'Bearer ci-secret-and-more' }, 401],
+      ['bare token, no scheme', { Authorization: 'ci-secret' }, 401],
+      ['lowercase scheme', { Authorization: 'bearer ci-secret' }, 401],
+      ['scheme only', { Authorization: 'Bearer ' }, 401],
+    ];
+    for (const [name, headers, want] of cases) {
+      assert.equal(await status(headers), want, name);
+    }
+  } finally { child.kill(); }
+});

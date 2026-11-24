@@ -169,6 +169,14 @@ function hostFromHeader(value) {
   return c >= 0 ? h.slice(0, c) : h;
 }
 
+// Constant-time check of the Authorization header against `Bearer <token>`.
+// Both sides are hashed first so timingSafeEqual always gets equal-length
+// buffers (it throws otherwise, and a length check would leak the length).
+function bearerMatches(header) {
+  const digest = (s) => crypto.createHash('sha256').update(s).digest();
+  return crypto.timingSafeEqual(digest(String(header || '')), digest(`Bearer ${MCP_AUTH_TOKEN}`));
+}
+
 // Returns null when the request may proceed, else { status, message }.
 function httpGuard(req) {
   // DNS-rebinding guard: the browser sends the attacker's domain as Host.
@@ -187,7 +195,7 @@ function httpGuard(req) {
     }
   }
   // Bearer-token guard: only enforced when a token is configured.
-  if (MCP_AUTH_TOKEN && req.headers.authorization !== `Bearer ${MCP_AUTH_TOKEN}`) {
+  if (MCP_AUTH_TOKEN && !bearerMatches(req.headers.authorization)) {
     return { status: 401, message: 'unauthorized' };
   }
   return null;
@@ -884,6 +892,14 @@ const TOOLS = [
 async function pollMessages(args) {
   const cur = decodeCursor(args.cursor); // null ⇒ seed mode
   const page = Math.min(Math.max(args.limit || 50, 1), 100);
+  // Fetch the Beeper max (100) per chat, NOT `page`: the fetch window must
+  // exceed the delivery page so that a chat with more than `page` new
+  // messages is delivered across successive polls via the cursor, rather
+  // than the cursor jumping to the newest and stranding the older ones.
+  // (Residual: a single chat receiving >100 messages between two polls can
+  // still lose the oldest of that burst — Beeper's messages endpoint only
+  // returns the newest N with no backward paging. Documented in the GUIDE.)
+  const fetchLimit = 100;
   const accounts = await getAccountMap();
 
   // Resolve which chats to scan: one if chat_id given, else the inbox.
@@ -915,7 +931,7 @@ async function pollMessages(args) {
     if (maxTs) {
       for (const c of chats) {
         if (c.last_message_at !== maxTs) continue;
-        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=100`);
+        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
         const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
         for (const m of mlist.map((x) => normalizeMessage(x, c))) {
           if (m.timestamp === maxTs) ids.push(String(m.id));
@@ -931,14 +947,6 @@ async function pollMessages(args) {
     ? chats
     : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
 
-  // Fetch the Beeper max (100) per chat, NOT `page`: the fetch window must
-  // exceed the delivery page so that a chat with more than `page` new
-  // messages is delivered across successive polls via the cursor, rather
-  // than the cursor jumping to the newest and stranding the older ones.
-  // (Residual: a single chat receiving >100 messages between two polls can
-  // still lose the oldest of that burst — Beeper's messages endpoint only
-  // returns the newest N with no backward paging. Documented in the GUIDE.)
-  const fetchLimit = 100;
   const fresh = [];
   for (const c of candidates) {
     const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
