@@ -1112,3 +1112,50 @@ test('webhookTick: a gap chat with no message in the batch logs "in one chat" (n
   assert.match(w[0], /in one chat since/);
   assert.equal(h.posts.length, 0);
 });
+
+// ── poll_messages seed: refuses an empty inbox (no cursor {ts:''}) ──
+test('pollMessages seed (no activity): chats without last_message_at reject; once they have timestamps the seed works and the next poll has no gaps', async () => {
+  S._resetAccountCache();
+  const full = Array.from({ length: 100 }, (_, i) => ({ id: `m${i}`, chatID: 'c1', timestamp: new Date(Date.UTC(2026, 5, 15, 10, 0, i)).toISOString(), text: 't', type: 'TEXT' }));
+  const state = { chats: [{ id: 'c1', title: 'one', accountID: 'matrix' }], msgs: { c1: full } };
+  stubBeeper(state);
+  await assert.rejects(() => S.pollMessages({}), /inbox not ready/);
+  state.chats = [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: full[99].timestamp }];
+  const seed = await S.pollMessages({});
+  assert.equal(seed.seeded, true);
+  const r = await S.pollMessages({ cursor: seed.cursor });
+  assert.equal(r.messages.length, 0);
+  assert.equal(r.gaps, undefined);
+});
+
+test('pollMessages seed (no activity): zero chats reject', async () => {
+  S._resetAccountCache();
+  stubBeeper({ chats: [], msgs: {} });
+  await assert.rejects(() => S.pollMessages({}), /inbox not ready/);
+});
+
+test('webhookTick: an "inbox not ready" seed rejection leaves cursor null, saves nothing, POSTs nothing', async () => {
+  const h = whHarness({ polls: [new Error('poll_messages: inbox not ready (no chat activity yet) — retry the seed shortly')] });
+  const st = { cursor: null, pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, null);
+  assert.equal(h.saves.length, 0);
+  assert.equal(h.posts.length, 0);
+});
+
+// ── webhook state: an unreadable file is moved aside, never overwritten ──
+test('webhook state: unreadable (EACCES) file with a pending batch -> WARN, moved to .unreadable-*, batch preserved', (t) => {
+  if (process.getuid && process.getuid() === 0) return t.skip('root ignores chmod; cannot make a file unreadable');
+  const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+  const content = JSON.stringify({ cursor: 'C1', pending: { id: 'msg_1', body: '{"x":1}', next_cursor: 'C2' } });
+  fs.writeFileSync(f, content); fs.chmodSync(f, 0);
+  const st = S.loadWebhookState(f, (m) => logs.push(m));
+  assert.deepEqual(st, FRESH);
+  S.saveWebhookState(f, { cursor: 'C5', pending: null, failures: 0 }, (m) => logs.push(m));
+  const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.unreadable-'));
+  assert.equal(moved.length, 1);
+  const mp = path.join(d, moved[0]);
+  fs.chmodSync(mp, 0o600);
+  assert.equal(fs.readFileSync(mp, 'utf8'), content);
+  assert.ok(logs.some((l) => /unreadable/.test(l) && /EACCES/.test(l) && /unreadable-/.test(l)), logs.join('|'));
+});

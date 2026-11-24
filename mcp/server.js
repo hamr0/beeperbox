@@ -863,7 +863,7 @@ const TOOLS = [
   },
   {
     name: 'poll_messages',
-    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat.',
+    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat. If the inbox has no activity yet, the seed call fails — retry it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -922,6 +922,11 @@ async function pollMessages(args) {
     for (const c of chats) {
       if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
     }
+    // No chat has activity (none, or none with last_message_at — typically the
+    // post-restart sync window): an empty-ts cursor would make the first poll
+    // treat every chat's history as new and flag gaps. Same rule as a seed-fetch
+    // failure — no fallback; the seed throws and the caller re-calls.
+    if (!maxTs) throw new Error('poll_messages: inbox not ready (no chat activity yet) — retry the seed shortly');
     // Mark the existing messages AT the high-water ts as seen. Without their
     // ids, isAfterCursor treats every same-ts message as new and the first poll
     // replays them (an old owner command could be re-run). A genuinely new
@@ -929,14 +934,12 @@ async function pollMessages(args) {
     // (If a chat's newest message isn't in its fetched window at maxTs, its ids
     // are simply empty — the pre-fix behavior, not a regression.)
     const ids = [];
-    if (maxTs) {
-      for (const c of chats) {
-        if (c.last_message_at !== maxTs) continue;
-        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
-        const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
-        for (const m of mlist.map((x) => normalizeMessage(x, c))) {
-          if (m.timestamp === maxTs) ids.push(String(m.id));
-        }
+    for (const c of chats) {
+      if (c.last_message_at !== maxTs) continue;
+      const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
+      const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+      for (const m of mlist.map((x) => normalizeMessage(x, c))) {
+        if (m.timestamp === maxTs) ids.push(String(m.id));
       }
     }
     return { cursor: encodeCursor({ ts: maxTs, ids }), messages: [], has_more: false, seeded: true };
@@ -1537,7 +1540,14 @@ function loadWebhookState(file, log) {
   const fresh = () => ({ cursor: null, pending: null, failures: 0 });
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch (e) {
-    if (e.code !== 'ENOENT') log(`state file ${file} unreadable (${e.code || e.message}); starting fresh`);
+    if (e.code !== 'ENOENT') {
+      // Not "no state yet": it may hold a pending batch the next save would
+      // overwrite. Move it aside like the corrupt branch (best-effort).
+      const aside = `${file}.unreadable-${Date.now()}`;
+      let moved;
+      try { fs.renameSync(file, aside); moved = `moved to ${aside}`; } catch (e2) { moved = `could not be moved aside (${e2.code || e2.message}) and may be overwritten`; }
+      log(`state file ${file} unreadable (${e.code || e.message}); ${moved}; starting fresh — any pending batch in it is not restored`);
+    }
     return fresh();
   }
   let reason = null;
