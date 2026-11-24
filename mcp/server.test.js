@@ -977,3 +977,15 @@ test('webhook idle tick: an empty poll with an unchanged cursor does not write s
   assert.equal(h.posts.length, 0);
   assert.equal(st.cursor, 'C0');
 });
+
+test('webhook POST failure log includes the underlying fetch cause, host only', async () => {
+  const err = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+  const h = whHarness({ statuses: [err] });
+  const st = { cursor: 'C0', pending: { id: 'msg_x', body: '{}', next_cursor: 'C1' }, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.logs.length, 1);
+  assert.match(h.logs[0], /fetch failed/);
+  assert.match(h.logs[0], /ECONNREFUSED/);
+  assert.ok(h.logs[0].includes('https://hooks.example.com'));
+  assert.ok(!h.logs[0].includes('token'));
+});

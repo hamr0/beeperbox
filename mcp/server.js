@@ -1483,7 +1483,9 @@ async function webhookTick(st, deps) {
     }
     deps.log(`POST to ${deps.host} failed: HTTP ${status}`);
   } catch (e) {
-    deps.log(`POST to ${deps.host} failed: ${e.name === 'TimeoutError' ? 'timeout' : e.message}`);
+    const why = e.name === 'TimeoutError' ? 'timeout' : e.message;
+    const cause = e.cause && (e.cause.code || e.cause.message);
+    deps.log(`POST to ${deps.host} failed: ${why}${cause ? ` (${cause})` : ''}`);
   }
   st.failures = (st.failures || 0) + 1;
   return Math.min(interval * 2 ** st.failures, WEBHOOK_MAX_BACKOFF_MS);
