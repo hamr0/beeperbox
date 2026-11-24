@@ -881,6 +881,78 @@ const TOOLS = [
   },
 ];
 
+async function pollMessages(args) {
+  const cur = decodeCursor(args.cursor); // null ⇒ seed mode
+  const page = Math.min(Math.max(args.limit || 50, 1), 100);
+  const accounts = await getAccountMap();
+
+  // Resolve which chats to scan: one if chat_id given, else the inbox.
+  let chats;
+  if (args.chat_id) {
+    const raw = await beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`);
+    chats = [normalizeChat(raw, accounts)];
+  } else {
+    const raw = await beeperFetch('/v1/chats?limit=100');
+    const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
+    chats = list.map((c) => normalizeChat(c, accounts));
+  }
+
+  // Seed (no cursor): return the current high-water mark and NO backlog,
+  // so the caller "starts watching from now". This is the half of the
+  // bug-class that integrators get wrong — there's now one right answer.
+  if (!cur) {
+    let maxTs = '';
+    for (const c of chats) {
+      if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
+    }
+    // Mark the existing messages AT the high-water ts as seen. Without their
+    // ids, isAfterCursor treats every same-ts message as new and the first poll
+    // replays them (an old owner command could be re-run). A genuinely new
+    // message at the same ts has a new id, so it is still delivered.
+    // (If a chat's newest message isn't in its fetched window at maxTs, its ids
+    // are simply empty — the pre-fix behavior, not a regression.)
+    const ids = [];
+    if (maxTs) {
+      for (const c of chats) {
+        if (c.last_message_at !== maxTs) continue;
+        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=100`);
+        const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+        for (const m of mlist.map((x) => normalizeMessage(x, c))) {
+          if (m.timestamp === maxTs) ids.push(String(m.id));
+        }
+      }
+    }
+    return { cursor: encodeCursor({ ts: maxTs, ids }), messages: [], has_more: false, seeded: true };
+  }
+
+  // Only chats whose last activity is at/after the cursor can hold new
+  // messages — skip the rest so the per-chat fan-out stays bounded.
+  const candidates = args.chat_id
+    ? chats
+    : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
+
+  // Fetch the Beeper max (100) per chat, NOT `page`: the fetch window must
+  // exceed the delivery page so that a chat with more than `page` new
+  // messages is delivered across successive polls via the cursor, rather
+  // than the cursor jumping to the newest and stranding the older ones.
+  // (Residual: a single chat receiving >100 messages between two polls can
+  // still lose the oldest of that burst — Beeper's messages endpoint only
+  // returns the newest N with no backward paging. Documented in the GUIDE.)
+  const fetchLimit = 100;
+  const fresh = [];
+  for (const c of candidates) {
+    const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
+    const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+    for (const m of mlist.map((x) => normalizeMessage(x, c))) {
+      if (isAfterCursor(m, cur)) fresh.push(m);
+    }
+  }
+
+  const { delivered, next, hasMore } = selectDelivery(fresh, cur, page);
+  const tagged = applyEchoTags(delivered, Date.now());
+  return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
+}
+
 async function callTool(name, args) {
   switch (name) {
     case 'list_accounts': {
@@ -1047,60 +1119,8 @@ async function callTool(name, args) {
         .slice(0, limit);
     }
 
-    case 'poll_messages': {
-      const cur = decodeCursor(args.cursor); // null ⇒ seed mode
-      const page = Math.min(Math.max(args.limit || 50, 1), 100);
-      const accounts = await getAccountMap();
-
-      // Resolve which chats to scan: one if chat_id given, else the inbox.
-      let chats;
-      if (args.chat_id) {
-        const raw = await beeperFetch(`/v1/chats/${encodeURIComponent(args.chat_id)}`);
-        chats = [normalizeChat(raw, accounts)];
-      } else {
-        const raw = await beeperFetch('/v1/chats?limit=100');
-        const list = raw.items || raw.chats || (Array.isArray(raw) ? raw : []);
-        chats = list.map((c) => normalizeChat(c, accounts));
-      }
-
-      // Seed (no cursor): return the current high-water mark and NO backlog,
-      // so the caller "starts watching from now". This is the half of the
-      // bug-class that integrators get wrong — there's now one right answer.
-      if (!cur) {
-        let maxTs = '';
-        for (const c of chats) {
-          if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
-        }
-        return { cursor: encodeCursor({ ts: maxTs, ids: [] }), messages: [], has_more: false, seeded: true };
-      }
-
-      // Only chats whose last activity is at/after the cursor can hold new
-      // messages — skip the rest so the per-chat fan-out stays bounded.
-      const candidates = args.chat_id
-        ? chats
-        : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
-
-      // Fetch the Beeper max (100) per chat, NOT `page`: the fetch window must
-      // exceed the delivery page so that a chat with more than `page` new
-      // messages is delivered across successive polls via the cursor, rather
-      // than the cursor jumping to the newest and stranding the older ones.
-      // (Residual: a single chat receiving >100 messages between two polls can
-      // still lose the oldest of that burst — Beeper's messages endpoint only
-      // returns the newest N with no backward paging. Documented in the GUIDE.)
-      const fetchLimit = 100;
-      const fresh = [];
-      for (const c of candidates) {
-        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
-        const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
-        for (const m of mlist.map((x) => normalizeMessage(x, c))) {
-          if (isAfterCursor(m, cur)) fresh.push(m);
-        }
-      }
-
-      const { delivered, next, hasMore } = selectDelivery(fresh, cur, page);
-      const tagged = applyEchoTags(delivered, Date.now());
-      return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
-    }
+    case 'poll_messages':
+      return pollMessages(args);
 
     case 'download_asset': {
       // Two ways to reference the attachment: a src_url directly (cheapest —
@@ -1362,6 +1382,7 @@ module.exports = {
   isAfterCursor,
   advanceCursor,
   selectDelivery,
+  pollMessages,
   textHash,
   normalizeAttachments,
   normalizeAccount,

@@ -93,10 +93,12 @@ test('a full poll walk delivers each message exactly once, even across a "restar
     { id: 'm1', timestamp: '2026-06-15T10:00:01.000Z' },
   ];
   // Seed from "now" = newest existing message.
-  let cur = S.decodeCursor(S.encodeCursor({ ts: '2026-06-15T10:00:02.000Z', ids: [] }));
-  // Seed boundary: the message exactly at the seed ts surfaces once; older does not.
+  let cur;
+  // Seed marks the existing message(s) at the high-water ts as seen (the real
+  // seed returns their ids), so nothing existing surfaces on the first poll.
+  cur = S.decodeCursor(S.encodeCursor({ ts: '2026-06-15T10:00:02.000Z', ids: ['m2'] }));
   let fresh = round1.filter((m) => S.isAfterCursor(m, cur));
-  assert.deepEqual(fresh.map((m) => m.id), ['m2']);
+  assert.deepEqual(fresh.map((m) => m.id), []);
   cur = S.advanceCursor(cur, fresh);
 
   // New messages arrive, including two sharing a millisecond.
@@ -573,3 +575,56 @@ test('normalizeAccount surfaces the backend connection status (observability)', 
   assert.equal(out.network, 'telegram');
   assert.equal(out.account_id, 'telegram');
 });
+
+// ── poll_messages seed: existing high-water messages are marked seen ──
+// Old code seeded {ts: maxTs, ids: []}, so the first poll redelivered EVERY
+// existing message sharing the high-water ts (live: 5 old WhatsApp messages).
+function stubBeeper(state) {
+  global.fetch = async (url) => {
+    const u = String(url);
+    let body;
+    if (u.includes('/v1/accounts')) body = [acct('matrix', 'Beeper')];
+    else if (/\/v1\/chats\/[^/?]+\/messages/.test(u)) {
+      const id = decodeURIComponent(u.match(/\/v1\/chats\/([^/?]+)\/messages/)[1]);
+      body = { items: state.msgs[id] || [] };
+    } else if (/\/v1\/chats\/[^/?]+$/.test(u)) {
+      const id = decodeURIComponent(u.match(/\/v1\/chats\/([^/?]+)$/)[1]);
+      body = state.chats.find((c) => c.id === id);
+    } else if (u.includes('/v1/chats')) body = { items: state.chats };
+    else body = {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  };
+}
+const T0 = '2026-06-15T10:00:00.000Z';
+const T1 = '2026-06-15T10:00:05.000Z';
+const pm = (id, ts) => ({ id, chatID: 'c1', timestamp: ts, text: id, type: 'TEXT' });
+
+for (const mode of ['inbox', 'chat_id']) {
+  test(`pollMessages seed (${mode}): no redelivery of existing high-water msgs; a new same-ts msg is still delivered`, async () => {
+    S._resetAccountCache();
+    const state = {
+      chats: [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: T1 }],
+      msgs: { c1: [pm('b', T1), pm('a', T1), pm('old', T0)] },
+    };
+    stubBeeper(state);
+    const base = mode === 'chat_id' ? { chat_id: 'c1' } : {};
+    try {
+      const seed = await S.pollMessages({ ...base });
+      assert.equal(seed.seeded, true);
+      assert.deepEqual(seed.messages, []);
+      assert.equal(seed.has_more, false);
+      const sc = S.decodeCursor(seed.cursor);
+      assert.equal(sc.ts, T1);
+      assert.deepEqual([...sc.ids].sort(), ['a', 'b']);
+
+      // Same data again: zero messages (old code: a and b both redelivered).
+      const p1 = await S.pollMessages({ ...base, cursor: seed.cursor });
+      assert.deepEqual(p1.messages, []);
+
+      // A genuinely new message in the SAME second must still arrive (never-miss).
+      state.msgs.c1 = [pm('new', T1), pm('b', T1), pm('a', T1), pm('old', T0)];
+      const p2 = await S.pollMessages({ ...base, cursor: p1.cursor });
+      assert.deepEqual(p2.messages.map((m) => m.id), ['new']);
+    } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+  });
+}
