@@ -629,6 +629,43 @@ for (const mode of ['inbox', 'chat_id']) {
   });
 }
 
+test('pollMessages seed (multi-chat): ids from every chat tied at the high-water ts; older chats are not fetched; no redelivery', async () => {
+  S._resetAccountCache();
+  const mk = (chat, id, ts) => ({ id, chatID: chat, timestamp: ts, text: id, type: 'TEXT' });
+  const state = {
+    chats: [
+      { id: 'A', title: 'a', accountID: 'matrix', lastActivity: T1 },
+      { id: 'B', title: 'b', accountID: 'matrix', lastActivity: T1 },
+      { id: 'C', title: 'c', accountID: 'matrix', lastActivity: T0 },
+    ],
+    msgs: {
+      A: [mk('A', 'a-new', T1), mk('A', 'a-old', T0)],
+      B: [mk('B', 'b-new', T1), mk('B', 'b-old', T0)],
+      C: [mk('C', 'c-old', T0)],
+    },
+  };
+  stubBeeper(state);
+  const stub = global.fetch;
+  const msgFetches = [];
+  global.fetch = async (url, ...rest) => {
+    const m = String(url).match(/\/v1\/chats\/([^/?]+)\/messages/);
+    if (m) msgFetches.push(decodeURIComponent(m[1]));
+    return stub(url, ...rest);
+  };
+  try {
+    const seed = await S.pollMessages({});
+    assert.equal(seed.seeded, true);
+    const sc = S.decodeCursor(seed.cursor);
+    assert.equal(sc.ts, T1);
+    assert.deepEqual([...sc.ids].sort(), ['a-new', 'b-new']);
+    assert.deepEqual([...msgFetches].sort(), ['A', 'B'], 'seed must fetch only chats tied at maxTs (not C)');
+    assert.ok(!msgFetches.includes('C'));
+
+    const p1 = await S.pollMessages({ cursor: seed.cursor });
+    assert.deepEqual(p1.messages, []);
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
 // ── bearer-token guard: accept/reject matrix over real HTTP ────────
 // Pins the accept/reject behaviour of the MCP_AUTH_TOKEN check (exact match on
 // `Bearer <token>`, nothing else) so swapping the comparison for a
