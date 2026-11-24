@@ -989,3 +989,30 @@ test('webhook POST failure log includes the underlying fetch cause, host only', 
   assert.ok(h.logs[0].includes('https://hooks.example.com'));
   assert.ok(!h.logs[0].includes('token'));
 });
+
+test('webhook full mode: a batch over 64 KiB falls back to the ping shape with messages_omitted', () => {
+  const big = Array.from({ length: 100 }, (_, i) => wm('m' + i, 'c1', '2026-01-01T00:00:0' + (i % 10) + 'Z', { text: 'x'.repeat(2000) }));
+  const p = S.buildWebhookPayload(big, 'full', 1_700_000_000_000);
+  const body = JSON.stringify(p);
+  assert.ok(Buffer.byteLength(body) <= 65536);
+  assert.equal(p.data.messages, undefined);
+  assert.equal(p.data.messages_omitted, true);
+  assert.equal(p.data.chats[0].count, 100);
+  assert.equal(p.data.chats[0].message_ids.length, 100);
+});
+
+test('webhook full mode: a small batch keeps messages and has no messages_omitted', () => {
+  const p = S.buildWebhookPayload([wm('a', 'c1', 't')], 'full', 1_700_000_000_000);
+  assert.equal(p.data.messages.length, 1);
+  assert.equal('messages_omitted' in p.data, false);
+});
+
+test('webhook config: secret must be canonical base64 of at least 16 bytes', () => {
+  const enc = (n) => Buffer.alloc(n, 7).toString('base64');
+  assert.equal(S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + enc(16) })).key.length, 16);
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + enc(15) })), /at least 16 bytes/);
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + enc(16) + ' \n' })), /at least 16 bytes/);
+  assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_SECRET: 'whsec_not base64 !!' })), /at least 16 bytes/);
+  // applies to loopback URLs too
+  assert.throws(() => S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: 'http://127.0.0.1:9/x', BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + enc(15) }), /at least 16 bytes/);
+});

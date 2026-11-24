@@ -635,7 +635,7 @@ If you'd rather be woken than poll, set `BEEPERBOX_WEBHOOK_URL`. beeperbox then 
 | `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` or `full`. |
 | `BEEPERBOX_WEBHOOK_STATE` | `<ledger dir>/webhook-state.json` | State file override. |
 
-**Payload.** `{"type":"messages.new","timestamp":"…","data":{"chats":[{"chat_id","network","count","latest_at","message_ids":[…]}]}}`. In `ping` mode no text, attachments or sender data leaves beeperbox — pull what you need with `read_chat` / `poll_messages`. `full` adds `data.messages` (the normalized `Message` objects). Messages with `source:"api"` (beeperbox's own sends) never trigger it.
+**Payload.** `{"type":"messages.new","timestamp":"…","data":{"chats":[{"chat_id","network","count","latest_at","message_ids":[…]}]}}`. In `ping` mode no text, attachments or sender data leaves beeperbox — pull what you need with `read_chat` / `poll_messages`. `full` adds `data.messages` (the normalized `Message` objects); it falls back to the ping shape (`messages_omitted: true`) when a batch would exceed 64 KiB. Messages with `source:"api"` (beeperbox's own sends) never trigger it.
 
 **Delivery.** At-least-once. The batch is saved before it is sent and the cursor advances only on a 2xx; anything else (non-2xx, redirect, timeout) retries the same `webhook-id` with exponential backoff capped at 5 minutes. Dedupe by message id on the receiver. If a poll has more waiting, the next one runs immediately.
 

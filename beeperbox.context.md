@@ -533,7 +533,7 @@ This replaces the hand-rolled "diff `list_inbox` against last-seen, dedup, track
 Off unless `BEEPERBOX_WEBHOOK_URL` is set; the 12 tools and `poll_messages` are unchanged. An in-process loop polls with its own persisted cursor (`BEEPERBOX_WEBHOOK_STATE`, default `webhook-state.json` next to the sent-ledger) and POSTs one Standard Webhooks request per batch of new, non-`source:"api"` messages.
 
 - Env: `BEEPERBOX_WEBHOOK_URL` (https, or http to loopback only), `BEEPERBOX_WEBHOOK_SECRET` (`whsec_<base64>`, required unless loopback), `BEEPERBOX_WEBHOOK_INTERVAL_MS` (default 10000, floor 1000), `BEEPERBOX_WEBHOOK_MODE` (`ping` default | `full`). Invalid config exits at startup.
-- Payload: `{"type":"messages.new","timestamp","data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`; `full` adds `data.messages` (normalized Message objects). `ping` carries no text/attachments/sender.
+- Payload: `{"type":"messages.new","timestamp","data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`; `full` adds `data.messages` (normalized Message objects) and falls back to the ping shape (`messages_omitted: true`) when a batch would exceed 64 KiB. `ping` carries no text/attachments/sender.
 - At-least-once: cursor advances only on 2xx; failures (incl. 3xx, timeout) retry the same `webhook-id` with backoff (cap 300s). Dedupe by message id.
 - Signing: `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.ts.body")>`. Redirects not followed.
 

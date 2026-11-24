@@ -1370,6 +1370,9 @@ function startStdioTransport() {
 // batch is persisted as `pending` (with its webhook-id) BEFORE the POST, so a
 // restart retries the same id. Messages with source:"api" never trigger it.
 const WEBHOOK_TIMEOUT_MS = 10000;
+// Receivers (e.g. OpenBot) reject bodies over 64 KiB with a 413 forever — a
+// retried poison pill. Full mode falls back to the ping shape past this size.
+const WEBHOOK_MAX_BODY_BYTES = 65536;
 const WEBHOOK_MAX_BACKOFF_MS = 300000;
 const WEBHOOK_MIN_INTERVAL_MS = 1000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', '::1', 'localhost']);
@@ -1388,8 +1391,13 @@ function webhookConfig(env) {
   let key = null;
   const secret = env.BEEPERBOX_WEBHOOK_SECRET;
   if (secret) {
-    key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
-    if (key.length === 0) throw new Error('BEEPERBOX_WEBHOOK_SECRET decodes to an empty key (expected whsec_<base64>)');
+    // Match Standard Webhooks / OpenBot: canonical base64, >= 16 bytes. Anything
+    // else would make the receiver HMAC with the raw string → silent permanent 401.
+    const enc = secret.replace(/^whsec_/, '');
+    key = Buffer.from(enc, 'base64');
+    if (key.length < 16 || key.toString('base64') !== enc) {
+      throw new Error('BEEPERBOX_WEBHOOK_SECRET must be whsec_<base64> of at least 16 bytes (e.g. the secret OpenBot/Svix shows)');
+    }
   } else if (!loopback) {
     throw new Error('BEEPERBOX_WEBHOOK_SECRET is required for a non-loopback webhook URL');
   }
@@ -1427,8 +1435,15 @@ function buildWebhookPayload(messages, mode, now) {
     if (m.timestamp && (!c.latest_at || m.timestamp > c.latest_at)) c.latest_at = m.timestamp;
   }
   const data = { chats: [...byChat.values()] };
-  if (mode === 'full') data.messages = messages;
-  return { type: 'messages.new', timestamp: new Date(now).toISOString(), data };
+  const env = { type: 'messages.new', timestamp: new Date(now).toISOString(), data };
+  if (mode === 'full') {
+    data.messages = messages;
+    if (Buffer.byteLength(JSON.stringify(env)) > WEBHOOK_MAX_BODY_BYTES) {
+      delete data.messages;
+      data.messages_omitted = true;
+    }
+  }
+  return env;
 }
 
 // One loop step. `st` = { cursor, pending, failures }. deps = { pollMessages,

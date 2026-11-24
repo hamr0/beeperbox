@@ -163,9 +163,9 @@ Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **pi
 | Env | Default | |
 |---|---|---|
 | `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to a loopback host only |
-| `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key; required unless the host is loopback |
+| `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key (≥16 bytes, canonical base64); required unless the host is loopback |
 | `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | floor `1000` |
-| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` |
+| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` (falls back to the ping shape, `messages_omitted: true`, when a batch would exceed 64 KiB) |
 | `BEEPERBOX_WEBHOOK_STATE` | next to the sent-ledger | cursor + in-flight batch file |
 
 Payload (one POST per batch, `source:"api"` sends excluded): `{"type":"messages.new","timestamp":…,"data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`. Delivery is **at-least-once** — the cursor advances only on a 2xx, failures retry with backoff under the same `webhook-id` — so dedupe by message id. Signed with `webhook-id` / `webhook-timestamp` / `webhook-signature` (HMAC-SHA256). Redirects are not followed; a bad config exits at startup.
