@@ -863,7 +863,7 @@ const TOOLS = [
   },
   {
     name: 'poll_messages',
-    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat. If the inbox has no activity yet, the seed call fails — retry it.',
+    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat. If the inbox has no activity yet, the seed\'s cursor is empty and later polls finish the seed (returning no messages, seeded:true) — just keep polling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -917,16 +917,17 @@ async function pollMessages(args) {
   // Seed (no cursor): return the current high-water mark and NO backlog,
   // so the caller "starts watching from now". This is the half of the
   // bug-class that integrators get wrong — there's now one right answer.
-  if (!cur) {
+  if (!cur || !cur.ts) {
     let maxTs = '';
     for (const c of chats) {
       if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
     }
-    // No chat has activity (none, or none with last_message_at — typically the
-    // post-restart sync window): an empty-ts cursor would make the first poll
-    // treat every chat's history as new and flag gaps. Same rule as a seed-fetch
-    // failure — no fallback; the seed throws and the caller re-calls.
-    if (!maxTs) throw new Error('poll_messages: inbox not ready (no chat activity yet) — retry the seed shortly');
+    // Lazy seed: an empty-ts cursor is only produced when no chat has activity
+    // (none, or none with last_message_at — typically the post-restart sync
+    // window). `!cur.ts` means "not seeded yet", so each later poll carrying it
+    // re-runs this path on the caller's own timer: no replay (it returns no
+    // messages), no error. Messages present while still unseeded count as
+    // pre-existing ("from now").
     // Mark the existing messages AT the high-water ts as seen. Without their
     // ids, isAfterCursor treats every same-ts message as new and the first poll
     // replays them (an old owner command could be re-run). A genuinely new
@@ -1534,8 +1535,13 @@ async function sendWebhook(cfg, pending, fetchFn = fetch, nowMs = Date.now) {
 }
 
 // Missing file → fresh, silently. An unreadable or invalid file is NOT the same
-// as "no state yet": it may hold a pending batch, so warn loudly and (for an
-// invalid one) move it aside rather than silently reseed over it.
+// as "no state yet": it may hold a pending batch, so warn loudly and move it
+// aside rather than silently reseed over it.
+function moveAside(file, tag) {
+  const aside = `${file}.${tag}-${Date.now()}`;
+  try { fs.renameSync(file, aside); return `moved to ${aside}`; } catch (e) { return `could not be moved aside (${e.code || e.message}) and may be overwritten`; }
+}
+
 function loadWebhookState(file, log) {
   const fresh = () => ({ cursor: null, pending: null, failures: 0 });
   let raw;
@@ -1543,9 +1549,7 @@ function loadWebhookState(file, log) {
     if (e.code !== 'ENOENT') {
       // Not "no state yet": it may hold a pending batch the next save would
       // overwrite. Move it aside like the corrupt branch (best-effort).
-      const aside = `${file}.unreadable-${Date.now()}`;
-      let moved;
-      try { fs.renameSync(file, aside); moved = `moved to ${aside}`; } catch (e2) { moved = `could not be moved aside (${e2.code || e2.message}) and may be overwritten`; }
+      const moved = moveAside(file, 'unreadable');
       log(`state file ${file} unreadable (${e.code || e.message}); ${moved}; starting fresh — any pending batch in it is not restored`);
     }
     return fresh();
@@ -1560,10 +1564,8 @@ function loadWebhookState(file, log) {
     else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string'))) reason = 'pending is malformed';
   }
   if (!reason) return { cursor: j.cursor, pending: j.pending, failures: 0 };
-  const aside = `${file}.corrupt-${Date.now()}`;
-  let moved = '';
-  try { fs.renameSync(file, aside); moved = `; moved to ${aside}`; } catch { /* best-effort */ }
-  log(`state file ${file} is corrupt (${reason})${moved}; reseeding — any pending batch in it is lost`);
+  const moved = moveAside(file, 'corrupt');
+  log(`state file ${file} is corrupt (${reason}); ${moved}; reseeding — any pending batch in it is lost`);
   return fresh();
 }
 

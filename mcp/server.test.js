@@ -1113,34 +1113,98 @@ test('webhookTick: a gap chat with no message in the batch logs "in one chat" (n
   assert.equal(h.posts.length, 0);
 });
 
-// ── poll_messages seed: refuses an empty inbox (no cursor {ts:''}) ──
-test('pollMessages seed (no activity): chats without last_message_at reject; once they have timestamps the seed works and the next poll has no gaps', async () => {
+// ── poll_messages lazy seed: no activity → empty-ts cursor; later polls finish the seed ──
+const lazyOld = (n) => Array.from({ length: n }, (_, i) => ({ id: `m${i}`, chatID: 'c1', timestamp: new Date(Date.UTC(2026, 5, 15, 10, 0, i)).toISOString(), text: 't', type: 'TEXT' })).reverse();
+const lazyTs = (i) => new Date(Date.UTC(2026, 5, 15, 10, 0, i)).toISOString();
+const emptyTs = (c) => S.decodeCursor(c).ts === '';
+
+async function lazyFlow(base) {
   S._resetAccountCache();
-  const full = Array.from({ length: 100 }, (_, i) => ({ id: `m${i}`, chatID: 'c1', timestamp: new Date(Date.UTC(2026, 5, 15, 10, 0, i)).toISOString(), text: 't', type: 'TEXT' }));
-  const state = { chats: [{ id: 'c1', title: 'one', accountID: 'matrix' }], msgs: { c1: full } };
+  const state = { chats: [{ id: 'c1', title: 'one', accountID: 'matrix' }], msgs: { c1: [] } };
   stubBeeper(state);
-  await assert.rejects(() => S.pollMessages({}), /inbox not ready/);
-  state.chats = [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: full[99].timestamp }];
+  const seed = await S.pollMessages({ ...base });
+  assert.equal(seed.seeded, true);
+  assert.deepEqual(seed.messages, []);
+  assert.ok(emptyTs(seed.cursor), 'no-activity seed yields an empty-ts cursor');
+  const idle = await S.pollMessages({ ...base, cursor: seed.cursor });
+  assert.equal(idle.messages.length, 0);
+  assert.equal(idle.gaps, undefined);
+  assert.ok(emptyTs(idle.cursor));
+  // activity + 100 old messages appear
+  state.msgs.c1 = lazyOld(100);
+  state.chats = [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: lazyTs(99) }];
+  const done = await S.pollMessages({ ...base, cursor: idle.cursor });
+  assert.equal(done.messages.length, 0);
+  assert.equal(done.gaps, undefined);
+  assert.equal(done.seeded, true);
+  assert.ok(!emptyTs(done.cursor));
+  // one genuinely new message: delivered once
+  state.msgs.c1 = [{ id: 'new1', chatID: 'c1', timestamp: lazyTs(500), text: 'n', type: 'TEXT' }, ...state.msgs.c1];
+  state.chats[0].lastActivity = lazyTs(500);
+  const got = await S.pollMessages({ ...base, cursor: done.cursor });
+  assert.deepEqual(got.messages.map((m) => m.id), ['new1']);
+  const again = await S.pollMessages({ ...base, cursor: got.cursor });
+  assert.equal(again.messages.length, 0);
+}
+
+test('pollMessages lazy seed (inbox, no activity): empty-ts cursor, re-seeds when activity appears, no replay, new message once', () => lazyFlow({}));
+test('pollMessages lazy seed (chat_id, no activity): empty-ts cursor, re-seeds when activity appears, no replay, new message once', () => lazyFlow({ chat_id: 'c1' }));
+
+test('pollMessages lazy seed (zero chats): seed resolves to an empty-ts cursor; polling it stays empty with no gaps', async () => {
+  S._resetAccountCache();
+  stubBeeper({ chats: [], msgs: {} });
   const seed = await S.pollMessages({});
   assert.equal(seed.seeded, true);
+  assert.ok(emptyTs(seed.cursor));
   const r = await S.pollMessages({ cursor: seed.cursor });
   assert.equal(r.messages.length, 0);
   assert.equal(r.gaps, undefined);
+  assert.ok(emptyTs(r.cursor));
 });
 
-test('pollMessages seed (no activity): zero chats reject', async () => {
+test('pollMessages lazy seed (restart resume): a persisted empty-ts cursor string in a later call re-seeds, no replay', async () => {
   S._resetAccountCache();
-  stubBeeper({ chats: [], msgs: {} });
-  await assert.rejects(() => S.pollMessages({}), /inbox not ready/);
+  const persisted = Buffer.from(JSON.stringify({ ts: '', ids: [] }), 'utf8').toString('base64');
+  stubBeeper({ chats: [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: lazyTs(99) }], msgs: { c1: lazyOld(100) } });
+  const r = await S.pollMessages({ cursor: persisted });
+  assert.equal(r.messages.length, 0);
+  assert.equal(r.gaps, undefined);
+  assert.equal(r.seeded, true);
+  assert.ok(!emptyTs(r.cursor));
 });
 
-test('webhookTick: an "inbox not ready" seed rejection leaves cursor null, saves nothing, POSTs nothing', async () => {
-  const h = whHarness({ polls: [new Error('poll_messages: inbox not ready (no chat activity yet) — retry the seed shortly')] });
+test('webhookTick + real pollMessages: empty ticks log/POST nothing; activity appearing POSTs nothing; then 1 new message POSTs exactly it', async () => {
+  S._resetAccountCache();
+  const state = { chats: [{ id: 'c1', title: 'one', accountID: 'matrix' }], msgs: { c1: [] } };
+  stubBeeper(state);
+  const h = whHarness();
+  h.deps.pollMessages = S.pollMessages;
+  const st = { cursor: null, pending: null, failures: 0 };
+  for (let i = 0; i < 3; i++) await S.webhookTick(st, h.deps);
+  assert.equal(h.logs.filter((l) => /seed failed/.test(l)).length, 0, h.logs.join('|'));
+  assert.equal(h.posts.length, 0);
+  state.msgs.c1 = lazyOld(100);
+  state.chats = [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: lazyTs(99) }];
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 0);
+  assert.equal(h.logs.filter((l) => /gap/.test(l)).length, 0, h.logs.join('|'));
+  state.msgs.c1 = [{ id: 'new1', chatID: 'c1', timestamp: lazyTs(500), text: 'n', type: 'TEXT' }, ...state.msgs.c1];
+  state.chats[0].lastActivity = lazyTs(500);
+  await S.webhookTick(st, h.deps);
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 1);
+  const body = JSON.parse(h.posts[0].body);
+  assert.deepEqual(body.data.chats.flatMap((c) => c.message_ids), ['new1']);
+});
+
+test('webhookTick: a seed-fetch failure (beeper api 503) leaves cursor null, saves nothing, POSTs nothing', async () => {
+  const h = whHarness({ polls: [new Error('beeper api 503')] });
   const st = { cursor: null, pending: null, failures: 0 };
   await S.webhookTick(st, h.deps);
   assert.equal(st.cursor, null);
   assert.equal(h.saves.length, 0);
   assert.equal(h.posts.length, 0);
+  assert.ok(h.logs.some((l) => /seed failed: beeper api 503/.test(l)));
 });
 
 // ── webhook state: an unreadable file is moved aside, never overwritten ──
