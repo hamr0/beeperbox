@@ -171,7 +171,7 @@ The **watch primitive** — a passive "what's new since I last looked?" feed for
 
 How the loop works:
 
-1. **Seed.** First call, omit `cursor`. You get back `{cursor, messages: [], seeded: true}` — an empty backlog and a starting cursor meaning *"from now"*. (The seed also marks the existing messages at the high-water timestamp as seen, so nothing that already existed is redelivered on the next poll; a genuinely new message arriving in that same second is still delivered, except one that lands while the seed call itself is running, which counts as already there, consistent with "from now". A seed can fail if Beeper errors while it reads the newest chats; call it again to retry.)
+1. **Seed.** First call, omit `cursor`. You get back `{cursor, messages: [], seeded: true}` — an empty backlog and a starting cursor meaning *"from now"*. (The seed also marks the existing messages at the high-water timestamp as seen, so nothing that already existed is redelivered on the next poll; a genuinely new message arriving in that same second is still delivered, except one that lands while the seed call itself is running, which counts as already there, consistent with "from now". A seed can fail if Beeper errors while it reads the newest chats; call it again to retry. While no chat has activity yet, e.g. right after a Beeper restart, the seed returns an empty cursor; each later poll with it finishes the seed, returning no messages and `seeded: true`, so just keep polling.)
 2. **Poll.** Pass the cursor back. You receive only messages newer than it, oldest-first, plus a fresh cursor. Persist the new cursor.
 3. **Repeat.** Sleep your chosen interval (the *policy* is yours — beeperbox only provides the *ability*), then poll again with the latest cursor.
 
@@ -192,7 +192,7 @@ while (true) {
 
 **Includes your own messages on purpose.** `sender.is_self` may be `true` — the owner messaging themselves in Note to self is a real inbound signal (often the command channel for an assistant). **To stop an agent from answering its own sends, branch on `source`, not `is_self`** (see the Message schema below): `source: "api"` means *this* beeperbox sent it via `send_message`/`note_to_self` — skip it; `source: "external"` is everything else, the human owner's own messages included.
 
-**Bounds (same as the rest of the API):** the inbox scan only sees Beeper's live-synced ~20 most-active chats (pin or `search_messages` for the long tail). `has_more: true` means there are *immediately fetchable* messages beyond this page — keep polling (the cursor advances) until it's `false`, then sleep. **Residual:** beeperbox fetches up to the newest 100 messages per chat per poll; if a single chat receives **more than 100** messages between two of your polls, the oldest of that burst can be missed (Beeper's messages endpoint returns only the newest N with no backward paging). Poll often enough that no chat exceeds ~100 between polls, or backfill that chat with `read_chat` / `search_messages`.
+**Bounds (same as the rest of the API):** the inbox scan only sees Beeper's live-synced ~20 most-active chats (pin or `search_messages` for the long tail). `has_more: true` means there are *immediately fetchable* messages beyond this page — keep polling (the cursor advances) until it's `false`, then sleep. **Residual:** beeperbox fetches up to the newest 100 messages per chat per poll; if a single chat receives **more than 100** messages between two of your polls, the oldest of that burst can be missed (Beeper's messages endpoint returns only the newest N with no backward paging). Poll often enough that no chat exceeds ~100 between polls, or backfill that chat with `read_chat` / `search_messages`. The response gains `gaps: [chat_id,…]` (only when non-empty) when a chat's full 100-message window never reaches the cursor — those chats may have skipped messages.
 
 ### `send_message`
 
@@ -527,6 +527,16 @@ while (running) {
 ```
 
 This replaces the hand-rolled "diff `list_inbox` against last-seen, dedup, track what I've replied to" loop with one cursor the server keeps honest. The poll interval is your call — beeperbox supplies the watch *ability*, not the cadence *policy*. Passing the inbound message id as `client_tag` on the reply makes the reply self-identifying in the next poll (it comes back `source: "api"`, so the guard skips it even if the content-match heuristic misses).
+
+## Webhook (opt-in, experimental)
+
+Off unless `BEEPERBOX_WEBHOOK_URL` is set; the 12 tools and `poll_messages` are unchanged. An in-process loop polls with its own persisted cursor (`BEEPERBOX_WEBHOOK_STATE`, default `webhook-state.json` next to the sent-ledger) and POSTs one Standard Webhooks request per batch of new, non-`source:"api"` messages.
+
+- Env: `BEEPERBOX_WEBHOOK_URL` (https, or http to loopback only; no `user:pass@` credentials), `BEEPERBOX_WEBHOOK_SECRET` (`whsec_<base64>`, required unless loopback), `BEEPERBOX_WEBHOOK_INTERVAL_MS` (default 10000, floor 1000), `BEEPERBOX_WEBHOOK_MODE` (`ping` default | `full`). Invalid config exits at startup.
+- Payload: `{"type":"messages.new","timestamp","data":{"chats":[{chat_id,network,count,latest_at,message_ids,possible_gap?}]}}`; `full` adds `data.messages` (normalized Message objects) and falls back to the ping shape (`messages_omitted: true`) when a batch would exceed 64 KiB. `ping` carries no text/attachments/sender.
+- At-least-once: cursor advances only on 2xx; failures (incl. 3xx, timeout) retry the same `webhook-id` with backoff (cap 300s). Dedupe by message id. Limit: polling pauses while a batch is pending, so >100 new messages in one chat during an outage can skip the oldest; that chat is flagged `possible_gap: true` in the payload + a stderr WARN (catch up with `read_chat`).
+- A corrupt `webhook-state.json` is moved to `.corrupt-<ms>` with a WARN and the webhook reseeds (a pending batch in it is lost); an unreadable one (e.g. permissions) is moved to `.unreadable-<ms>` the same way.
+- Signing: `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.ts.body")>`. Redirects not followed.
 
 ## Transport summary
 

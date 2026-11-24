@@ -14,6 +14,46 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 export DISPLAY=:99
 fail=0
 
+# RFB refusal-reason cap: a hostile peer advertising a 4 GiB reason must not be
+# buffered. Needs only python3 (runs before Xvfb).
+if ! PYTHONDONTWRITEBYTECODE=1 HERE="$HERE" python3 - <<'PYEOF'
+import os, socket, sys, threading, time
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.environ["HERE"])
+import rfb
+
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen(1)
+
+def serve():
+    c, _ = srv.accept()
+    try:
+        c.sendall(b"RFB 003.008\n")
+        c.recv(12)
+        c.sendall(b"\x00" + (0xFFFFFFFF).to_bytes(4, "big"))
+        chunk = b"A" * 65536
+        for _ in range(800):  # ~50 MB
+            c.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        c.close()
+
+threading.Thread(target=serve, daemon=True).start()
+t0 = time.time()
+try:
+    rfb.connect("127.0.0.1", srv.getsockname()[1], 5)
+    print("no RfbError raised")
+    sys.exit(1)
+except rfb.RfbError as e:
+    msg = str(e)
+    if len(msg) >= 5000 or time.time() - t0 > 5:
+        print(f"reason not capped: {len(msg)} chars in {time.time()-t0:.1f}s")
+        sys.exit(1)
+PYEOF
+then echo "FAIL: RFB refusal reason must be capped (hostile 4 GiB reason_len)"; fail=1; else echo "PASS: RFB refusal reason is capped"; fi
+
 Xvfb :99 -screen 0 1024x768x24 -ac >/dev/null 2>&1 &
 sleep 2
 

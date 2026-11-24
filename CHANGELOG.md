@@ -12,6 +12,36 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the Beeper version pinned in `beeper-version.txt`), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; promote it by bumping the pin), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
+## [0.10.0] — 2026-11-24 `[MINOR]`
+
+An opt-in outbound webhook (#41) and a `poll_messages` gap signal, plus a fix for an empty-inbox seed replay present since 0.6.0. MINOR per the versioning policy: new runtime behavior and a new optional schema field (`gaps`).
+
+### Added
+
+- **Opt-in outbound webhook (#41).** Set `BEEPERBOX_WEBHOOK_URL` and an in-process loop over `pollMessages` (own persisted cursor) POSTs one signed request per batch of new messages. Off unless the URL is set. Messages with `source: "api"` (your own sends) never trigger it.
+  - Env vars: `BEEPERBOX_WEBHOOK_URL` (enable), `BEEPERBOX_WEBHOOK_SECRET` (signing secret), `BEEPERBOX_WEBHOOK_MODE` (`ping` default, or `full`), `BEEPERBOX_WEBHOOK_INTERVAL_MS` (poll interval; default 10 s, floored at 1000), `BEEPERBOX_WEBHOOK_STATE` (path of the state file).
+  - **Modes.** `ping` (default) carries ids and counts only; the receiver calls `read_chat` for content. `full` adds the normalized messages. If a `full` batch would exceed 64 KiB it falls back to the ping shape with `messages_omitted: true`, so a receiver that 413s oversized bodies cannot wedge the loop on a retried batch.
+  - **Signing.** Standard Webhooks headers (`webhook-id`, `webhook-timestamp`, `webhook-signature`), compatible with OpenBot. The secret must be strict `whsec_<base64>` decoding to at least 16 bytes; anything else is rejected at startup rather than producing a silent permanent 401. A secret is required for any non-loopback URL.
+  - **Delivery.** At-least-once: the cursor advances only on a 2xx, a retry reuses the same `webhook-id`, and failures back off up to 5 minutes. A restart resumes from the persisted cursor.
+  - **URL rules.** `https://` or loopback `http://` only; redirects are not followed; a URL containing `user:pass@` credentials is rejected at startup (the error does not echo the URL), so a password or query token never reaches stderr.
+  - **`possible_gap`.** When a chat's newest-100 window never reached the cursor (a receiver outage spanning more than 100 messages in one chat), the webhook marks those chats `possible_gap: true` and logs a warning. Previously the oldest were lost silently.
+  - **State file.** A corrupt (truncated or malformed) or unreadable `webhook-state.json` is moved aside (`.corrupt-<ms>` / `.unreadable-<ms>`) with a warning, never silently overwritten by a reseed.
+- `poll_messages` returns a new optional `gaps: [chat_id]` field when a chat's newest-100 window never reaches the cursor, so older new messages may have been skipped. Absent when there are none.
+
+### Fixed
+
+- **`poll_messages` seed no longer replays history on an empty or still-syncing inbox (present since 0.6.0).** A seed taken while no chat had `last_message_at` (empty inbox, or the post-restart sync window) produced an empty-`ts` cursor, and the next poll delivered every chat's recent history as new (repro: 50 old messages; in a consumer, 100 old self-commands executed) and flagged false gaps. An empty-`ts` cursor now means "not seeded yet": each poll carrying it re-runs the seed, returns no messages until there is activity, then hands back a real cursor. Later polls finish the seed and may return `seeded: true` again. No error is thrown and no caller change is needed.
+- Fetch failures on a webhook POST now log the underlying cause (`ECONNREFUSED`, `ENOTFOUND`, TLS error) instead of a bare "fetch failed".
+- `scripts/rfb.py` caps the RFB refusal reason at 4 KiB. A peer advertising a 4 GiB `reason_len` made `connect()` buffer everything it streamed (400 MB to 1.2 GB RSS in a repro). `scripts/vnc-auth-check.sh` gains a pre-Xvfb check that fails on the old code and passes now. CI/internal only.
+
+### Docs
+
+- Webhook documented, including the exact loopback hosts `http://` is allowed for, and the limit on "nothing is lost" (restarts, not an outage over 100 messages in one chat).
+
+### Consumer note
+
+`poll_messages` responses may now include `gaps`; consumers should catch up those chats with `read_chat`.
+
 ## [0.9.4] — 2026-11-24 `[PATCH]`
 
 ### Fixed

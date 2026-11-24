@@ -59,6 +59,13 @@ services:
       # container) — only override to relocate it. Best-effort: a failed write
       # degrades the guard to in-memory, never fails a send.
       BEEPERBOX_SENT_LEDGER: ${BEEPERBOX_SENT_LEDGER:-}
+      # Opt-in outbound webhook (off while URL is empty). See docs/GUIDE.md. The
+      # cursor/pending state defaults to /root/.config/beeperbox/webhook-state.json,
+      # on the persisted config volume below.
+      BEEPERBOX_WEBHOOK_URL: ${BEEPERBOX_WEBHOOK_URL:-}
+      BEEPERBOX_WEBHOOK_SECRET: ${BEEPERBOX_WEBHOOK_SECRET:-}
+      BEEPERBOX_WEBHOOK_INTERVAL_MS: ${BEEPERBOX_WEBHOOK_INTERVAL_MS:-}
+      BEEPERBOX_WEBHOOK_MODE: ${BEEPERBOX_WEBHOOK_MODE:-}
     volumes:
       - beeperbox_config:/root/.config
     shm_size: '256m'

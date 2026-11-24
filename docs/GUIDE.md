@@ -497,7 +497,7 @@ If you call `/v1/*` directly instead of going through the MCP tools, you inherit
 
 ## MCP tools reference
 
-beeperbox exposes 11 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
+beeperbox exposes 12 semantic tools over Model Context Protocol on two interchangeable transports. Any AI agent runtime that speaks MCP (Claude Code, Cursor, Cline, Continue, bareagent, etc.) can consume them.
 
 ### The 12 tools
 
@@ -518,7 +518,7 @@ beeperbox exposes 11 semantic tools over Model Context Protocol on two interchan
 
 #### `poll_messages` — the watch loop
 
-A passive new-messages-since-cursor feed; the right tool for an agent that wants to *react* to incoming messages instead of repeatedly diffing `list_inbox` by hand. **Read-only** — it never marks read, archives, or mutates. First call (omit `cursor`) **seeds** from now and returns `{cursor, messages: [], seeded: true}` (existing messages at the high-water timestamp are marked seen, so none are redelivered; a new message in that same second is still delivered, except one arriving while the seed call itself is running, which counts as already there, consistent with "from now"; a seed can fail if Beeper errors while it reads the newest chats, so call it again to retry); pass the cursor back each subsequent call to get only newer messages plus a fresh cursor. The cursor is opaque and **restart-resumable** — persist it and resume across restarts with no missed or duplicated messages (same-millisecond messages are deduplicated by id). `has_more: true` means more is immediately fetchable — keep polling until it's `false`, then sleep. (Residual: beeperbox reads up to the newest 100 messages per chat per poll, so a chat receiving more than 100 messages between two polls can lose the oldest of that burst — Beeper's API has no backward paging; poll frequently enough, or backfill with `read_chat`.) Includes the account's own messages on purpose; branch on each message's **`source`** field (`"api"` = sent by this beeperbox, skip it; `"external"` = everything else including the owner's own Note-to-self commands) rather than `sender.is_self`, which can't tell the agent's API sends from the human's own typing. The poll interval is yours — beeperbox provides the *ability* to watch, not a *policy* about cadence.
+A passive new-messages-since-cursor feed; the right tool for an agent that wants to *react* to incoming messages instead of repeatedly diffing `list_inbox` by hand. **Read-only** — it never marks read, archives, or mutates. First call (omit `cursor`) **seeds** from now and returns `{cursor, messages: [], seeded: true}` (existing messages at the high-water timestamp are marked seen, so none are redelivered; a new message in that same second is still delivered, except one arriving while the seed call itself is running, which counts as already there, consistent with "from now"; a seed can fail if Beeper errors while it reads the newest chats, so call it again to retry; if the inbox has no activity yet — e.g. right after a Beeper restart, before chats have synced — the seed returns an empty cursor, and each later poll with it finishes the seed, returning no messages and `seeded: true`, so just keep polling); pass the cursor back each subsequent call to get only newer messages plus a fresh cursor. The cursor is opaque and **restart-resumable** — persist it and resume across restarts with no missed or duplicated messages (same-millisecond messages are deduplicated by id). `has_more: true` means more is immediately fetchable — keep polling until it's `false`, then sleep. (Residual: beeperbox reads up to the newest 100 messages per chat per poll, so a chat receiving more than 100 messages between two polls can lose the oldest of that burst — Beeper's API has no backward paging; poll frequently enough, or backfill with `read_chat`. When a chat's fetched window is full and never reaches back to your cursor, the response carries `gaps: [chat_id, …]` (absent otherwise) — those chats may have skipped messages; backfill them with `read_chat`.) Includes the account's own messages on purpose; branch on each message's **`source`** field (`"api"` = sent by this beeperbox, skip it; `"external"` = everything else including the owner's own Note-to-self commands) rather than `sender.is_self`, which can't tell the agent's API sends from the human's own typing. The poll interval is yours — beeperbox provides the *ability* to watch, not a *policy* about cadence.
 
 #### `download_asset` — reach an attachment's bytes (MCP-only)
 
@@ -620,6 +620,26 @@ curl -s -X POST http://localhost:23375 \
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | docker exec -i beeperbox node /opt/mcp/server.js --stdio
 ```
+
+---
+
+## Webhook (opt-in, experimental)
+
+If you'd rather be woken than poll, set `BEEPERBOX_WEBHOOK_URL`. beeperbox then runs an internal `poll_messages` loop (its own cursor, persisted to `webhook-state.json` beside the sent-ledger, so it survives restarts) and POSTs one request per batch of new messages. Unset, the feature is fully off and nothing else changes.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BEEPERBOX_WEBHOOK_URL` | unset | Target. `https://`, or `http://` only for `127.0.0.1` / `::1` / `localhost`; no `user:pass@` credentials. Bad value = startup error. |
+| `BEEPERBOX_WEBHOOK_SECRET` | — | Standard Webhooks secret (`whsec_<base64>`). Required for non-loopback URLs. |
+| `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | Poll cadence; values under `1000` are raised to `1000`. |
+| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` or `full`. |
+| `BEEPERBOX_WEBHOOK_STATE` | `<ledger dir>/webhook-state.json` | State file override. |
+
+**Payload.** `{"type":"messages.new","timestamp":"…","data":{"chats":[{"chat_id","network","count","latest_at","message_ids":[…]}]}}`. In `ping` mode no text, attachments or sender data leaves beeperbox — pull what you need with `read_chat` / `poll_messages`. `full` adds `data.messages` (the normalized `Message` objects); it falls back to the ping shape (`messages_omitted: true`) when a batch would exceed 64 KiB. Messages with `source:"api"` (beeperbox's own sends) never trigger it.
+
+**Delivery.** At-least-once. The batch is saved before it is sent and the cursor advances only on a 2xx; anything else (non-2xx, redirect, timeout) retries the same `webhook-id` with exponential backoff capped at 5 minutes. Dedupe by message id on the receiver. If a poll has more waiting, the next one runs immediately. **Limit:** polling pauses while a batch is pending, so if the receiver is unreachable while more than 100 new messages arrive in one chat, the older ones can be skipped (Beeper returns only the newest 100 per chat). The next ping flags that chat with `possible_gap: true` and a warning is logged; catch up with `read_chat`. If `webhook-state.json` is corrupt (truncated, malformed, empty, wrong shape), it is moved aside to `webhook-state.json.corrupt-<ms>` with a warning and the webhook reseeds from now — any batch that was pending in it is lost. A file that cannot be read at all (e.g. permissions) is likewise moved aside, to `webhook-state.json.unreadable-<ms>`, with a warning, and the webhook reseeds.
+
+**Signing.** With a secret, each request carries `webhook-id`, `webhook-timestamp` (fresh per attempt) and `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.timestamp.body")>`. Redirects are never followed. The log shows only scheme and host, never the path or query.
 
 ---
 

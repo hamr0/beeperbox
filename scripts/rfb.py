@@ -55,8 +55,10 @@ def connect(host: str, port: int, timeout: float) -> tuple[socket.socket, list[i
         count = first[0]
         if count == 0:
             reason_len = int.from_bytes(_recv_upto(s, 4), "big")
-            reason = _recv_upto(s, reason_len)
-            raise RfbError(f"server refused handshake: {reason!r}")
+            # A hostile peer can advertise up to 4 GiB; never buffer more than 4 KiB.
+            reason = _recv_upto(s, min(reason_len, 4096))
+            extra = f" (truncated; server advertised {reason_len} bytes)" if reason_len > 4096 else ""
+            raise RfbError(f"server refused handshake: {reason!r}{extra}")
         return s, list(recv_exact(s, count))
     except BaseException:
         s.close()

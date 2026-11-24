@@ -113,6 +113,14 @@ the lite-mode boot check would log a misleading failure on every container start
   `file://` block breaks attachment resolution. Blocks traversal (including double-encoded), a
   non-empty `file://` host, and `http(s)://` (SSRF).
 
+### Opt-in webhook (`webhookConfig` / `webhookTick`)
+
+Off unless `BEEPERBOX_WEBHOOK_URL` is set. An in-process loop calls `pollMessages` with its **own** persisted
+cursor (`webhook-state.json` beside the sent-ledger) and POSTs one Standard Webhooks request per batch.
+At-least-once: the batch is saved as `pending` *before* the POST and the cursor advances only on a 2xx.
+Invalid config exits at startup; a corrupt/unreadable state file is moved aside, never silently reseeded over.
+User-facing contract lives in `docs/GUIDE.md` ("Webhook").
+
 ### Container supervision (`entrypoint.sh`)
 
 Boots Xvfb → x11vnc → websockify (noVNC) → Beeper (Electron, `--no-sandbox`) → socat → MCP. Two

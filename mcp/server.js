@@ -6,6 +6,7 @@
 // Stdio transport will be added once HTTP is solid.
 
 const http = require('http');
+const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
@@ -862,7 +863,7 @@ const TOOLS = [
   },
   {
     name: 'poll_messages',
-    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping.',
+    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat. If the inbox has no activity yet, the seed\'s cursor is empty and later polls finish the seed (returning no messages, seeded:true) — just keep polling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -916,11 +917,17 @@ async function pollMessages(args) {
   // Seed (no cursor): return the current high-water mark and NO backlog,
   // so the caller "starts watching from now". This is the half of the
   // bug-class that integrators get wrong — there's now one right answer.
-  if (!cur) {
+  if (!cur || !cur.ts) {
     let maxTs = '';
     for (const c of chats) {
       if (c.last_message_at && c.last_message_at > maxTs) maxTs = c.last_message_at;
     }
+    // Lazy seed: an empty-ts cursor is only produced when no chat has activity
+    // (none, or none with last_message_at — typically the post-restart sync
+    // window). `!cur.ts` means "not seeded yet", so each later poll carrying it
+    // re-runs this path on the caller's own timer: no replay (it returns no
+    // messages), no error. Messages present while still unseeded count as
+    // pre-existing ("from now").
     // Mark the existing messages AT the high-water ts as seen. Without their
     // ids, isAfterCursor treats every same-ts message as new and the first poll
     // replays them (an old owner command could be re-run). A genuinely new
@@ -928,14 +935,12 @@ async function pollMessages(args) {
     // (If a chat's newest message isn't in its fetched window at maxTs, its ids
     // are simply empty — the pre-fix behavior, not a regression.)
     const ids = [];
-    if (maxTs) {
-      for (const c of chats) {
-        if (c.last_message_at !== maxTs) continue;
-        const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
-        const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
-        for (const m of mlist.map((x) => normalizeMessage(x, c))) {
-          if (m.timestamp === maxTs) ids.push(String(m.id));
-        }
+    for (const c of chats) {
+      if (c.last_message_at !== maxTs) continue;
+      const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
+      const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+      for (const m of mlist.map((x) => normalizeMessage(x, c))) {
+        if (m.timestamp === maxTs) ids.push(String(m.id));
       }
     }
     return { cursor: encodeCursor({ ts: maxTs, ids }), messages: [], has_more: false, seeded: true };
@@ -948,17 +953,25 @@ async function pollMessages(args) {
     : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
 
   const fresh = [];
+  const gaps = [];
   for (const c of candidates) {
     const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
     const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+    let allAfter = mlist.length > 0;
     for (const m of mlist.map((x) => normalizeMessage(x, c))) {
       if (isAfterCursor(m, cur)) fresh.push(m);
+      else allAfter = false;
     }
+    // A full window that never reaches back to the cursor: older new messages
+    // in this chat may have been skipped (Beeper pages newest-only).
+    if (mlist.length >= fetchLimit && allAfter) gaps.push(c.id);
   }
 
   const { delivered, next, hasMore } = selectDelivery(fresh, cur, page);
   const tagged = applyEchoTags(delivered, Date.now());
-  return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
+  const out = { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
+  if (gaps.length) out.gaps = gaps;
+  return out;
 }
 
 async function callTool(name, args) {
@@ -1362,16 +1375,251 @@ function startStdioTransport() {
   preflight();
 }
 
+// ─── webhook (opt-in "ping" notifications) ───────────────────────
+// Off unless BEEPERBOX_WEBHOOK_URL is set. An in-process loop drives
+// pollMessages with its OWN persisted cursor and POSTs one Standard Webhooks
+// envelope per batch. At-least-once: the cursor advances only on a 2xx, and a
+// batch is persisted as `pending` (with its webhook-id) BEFORE the POST, so a
+// restart retries the same id. Messages with source:"api" never trigger it.
+const WEBHOOK_TIMEOUT_MS = 10000;
+// Receivers (e.g. OpenBot) reject bodies over 64 KiB with a 413 forever — a
+// retried poison pill. Full mode falls back to the ping shape past this size.
+const WEBHOOK_MAX_BODY_BYTES = 65536;
+const WEBHOOK_MAX_BACKOFF_MS = 300000;
+const WEBHOOK_MIN_INTERVAL_MS = 1000;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', '::1', 'localhost']);
+
+// Pure: validate env → { enabled:false } | { enabled:true, ... }. Throws Error
+// with a clear message on any misconfiguration (caller fails fast).
+function webhookConfig(env) {
+  const rawUrl = env.BEEPERBOX_WEBHOOK_URL;
+  if (!rawUrl) return { enabled: false };
+  let u;
+  try { u = new URL(rawUrl); } catch { throw new Error('BEEPERBOX_WEBHOOK_URL is not a valid URL'); }
+  if (u.username || u.password) {
+    throw new Error('BEEPERBOX_WEBHOOK_URL must not contain credentials (user:pass@) — use BEEPERBOX_WEBHOOK_SECRET for signing');
+  }
+  const loopback = LOOPBACK_HOSTS.has(u.hostname);
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) {
+    throw new Error('BEEPERBOX_WEBHOOK_URL must be https:// (http:// is allowed only for a loopback host)');
+  }
+  let key = null;
+  const secret = env.BEEPERBOX_WEBHOOK_SECRET;
+  if (secret) {
+    // Match Standard Webhooks / OpenBot: canonical base64, >= 16 bytes. Anything
+    // else would make the receiver HMAC with the raw string → silent permanent 401.
+    const enc = secret.replace(/^whsec_/, '');
+    key = Buffer.from(enc, 'base64');
+    if (key.length < 16 || key.toString('base64') !== enc) {
+      throw new Error('BEEPERBOX_WEBHOOK_SECRET must be whsec_<base64> of at least 16 bytes (e.g. the secret OpenBot/Svix shows)');
+    }
+  } else if (!loopback) {
+    throw new Error('BEEPERBOX_WEBHOOK_SECRET is required for a non-loopback webhook URL');
+  }
+  const mode = env.BEEPERBOX_WEBHOOK_MODE || 'ping';
+  if (mode !== 'ping' && mode !== 'full') throw new Error(`BEEPERBOX_WEBHOOK_MODE must be "ping" or "full" (got "${mode}")`);
+  let interval = parseInt(env.BEEPERBOX_WEBHOOK_INTERVAL_MS || '', 10);
+  const notes = [];
+  if (!Number.isFinite(interval)) interval = 10000;
+  else if (interval < WEBHOOK_MIN_INTERVAL_MS) {
+    notes.push(`BEEPERBOX_WEBHOOK_INTERVAL_MS=${interval} is below the 1000 floor — using 1000`);
+    interval = WEBHOOK_MIN_INTERVAL_MS;
+  }
+  return { enabled: true, url: u.href, host: `${u.protocol}//${u.host}`, key, mode, interval, notes };
+}
+
+function webhookStatePath() {
+  if (process.env.BEEPERBOX_WEBHOOK_STATE) return process.env.BEEPERBOX_WEBHOOK_STATE;
+  return path.join(path.dirname(ledgerPath()), 'webhook-state.json');
+}
+
+// Standard Webhooks signature: v1,base64(HMAC-SHA256(key, "id.ts.body")).
+function signWebhook(key, id, ts, body) {
+  return 'v1,' + crypto.createHmac('sha256', key).update(`${id}.${ts}.${body}`).digest('base64');
+}
+
+// Pure: envelope for one batch. Ping mode carries ids/counts only — no text,
+// attachments or sender data. Full mode adds the normalized messages.
+function buildWebhookPayload(messages, mode, now, gaps) {
+  const byChat = new Map();
+  for (const m of messages) {
+    let c = byChat.get(m.chat_id);
+    if (!c) { c = { chat_id: m.chat_id, network: m.network, count: 0, latest_at: null, message_ids: [] }; byChat.set(m.chat_id, c); }
+    c.count++;
+    c.message_ids.push(m.id);
+    if (m.timestamp && (!c.latest_at || m.timestamp > c.latest_at)) c.latest_at = m.timestamp;
+  }
+  if (gaps) for (const g of gaps) { const c = byChat.get(g); if (c) c.possible_gap = true; }
+  const data = { chats: [...byChat.values()] };
+  const env = { type: 'messages.new', timestamp: new Date(now).toISOString(), data };
+  if (mode === 'full') {
+    data.messages = messages;
+    if (Buffer.byteLength(JSON.stringify(env)) > WEBHOOK_MAX_BODY_BYTES) {
+      delete data.messages;
+      data.messages_omitted = true;
+    }
+  }
+  return env;
+}
+
+// One loop step. `st` = { cursor, pending, failures }. deps = { pollMessages,
+// post(pending) → HTTP status (throws on network error), save(st), now(), mode,
+// interval, host, log }. Returns the delay (ms) before the next tick.
+async function webhookTick(st, deps) {
+  const { interval } = deps;
+  let hasMore = false;
+  if (!st.cursor) {
+    // Never fall back to an empty cursor: a failed seed just retries.
+    try {
+      const r = await deps.pollMessages({});
+      st.cursor = r.cursor;
+      deps.save(st);
+    } catch (e) {
+      deps.log(`seed failed: ${e.message}`);
+    }
+    return interval;
+  }
+  if (!st.pending) {
+    let r;
+    try {
+      r = await deps.pollMessages({ cursor: st.cursor, limit: 100 });
+    } catch (e) {
+      deps.log(`poll failed: ${e.message}`);
+      return interval;
+    }
+    const msgs = r.messages.filter((m) => m.source !== 'api');
+    for (const g of r.gaps || []) {
+      const net = (r.messages.find((m) => m.chat_id === g) || {}).network;
+      const where = net ? `one ${net} chat` : 'one chat';
+      deps.log(`possible gap: >100 new messages in ${where} since the last delivery; older ones may be missing — catch up with read_chat`);
+    }
+    if (msgs.length === 0) {
+      if (r.cursor !== st.cursor) { // advance past skipped api messages; no write when idle
+        st.cursor = r.cursor;
+        deps.save(st);
+      }
+      return r.has_more ? 0 : interval;
+    }
+    st.pending = {
+      id: 'msg_' + crypto.randomUUID(),
+      body: JSON.stringify(buildWebhookPayload(msgs, deps.mode, deps.now(), r.gaps)),
+      next_cursor: r.cursor,
+    };
+    deps.save(st);
+    hasMore = !!r.has_more;
+  }
+  try {
+    const status = await deps.post(st.pending);
+    if (status >= 200 && status < 300) {
+      st.cursor = st.pending.next_cursor;
+      st.pending = null;
+      st.failures = 0;
+      deps.save(st);
+      return hasMore ? 0 : interval;
+    }
+    deps.log(`POST to ${deps.host} failed: HTTP ${status}`);
+  } catch (e) {
+    const why = e.name === 'TimeoutError' ? 'timeout' : e.message;
+    const cause = e.cause && (e.cause.code || e.cause.message);
+    deps.log(`POST to ${deps.host} failed: ${why}${cause ? ` (${cause})` : ''}`);
+  }
+  st.failures = (st.failures || 0) + 1;
+  return Math.min(interval * 2 ** st.failures, WEBHOOK_MAX_BACKOFF_MS);
+}
+
+// One POST attempt → HTTP status. Fresh timestamp per attempt; redirects are
+// NOT followed (a 3xx is a failure); bounded by a timeout.
+async function sendWebhook(cfg, pending, fetchFn = fetch, nowMs = Date.now) {
+  const ts = String(Math.floor(nowMs() / 1000));
+  const headers = { 'content-type': 'application/json', 'webhook-id': pending.id, 'webhook-timestamp': ts };
+  if (cfg.key) headers['webhook-signature'] = signWebhook(cfg.key, pending.id, ts, pending.body);
+  const res = await fetchFn(cfg.url, { method: 'POST', headers, body: pending.body, redirect: 'manual', signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
+  return res.status;
+}
+
+// Missing file → fresh, silently. An unreadable or invalid file is NOT the same
+// as "no state yet": it may hold a pending batch, so warn loudly and move it
+// aside rather than silently reseed over it.
+function moveAside(file, tag) {
+  const aside = `${file}.${tag}-${Date.now()}`;
+  try { fs.renameSync(file, aside); return `moved to ${aside}`; } catch (e) { return `could not be moved aside (${e.code || e.message}) and may be overwritten`; }
+}
+
+function loadWebhookState(file, log) {
+  const fresh = () => ({ cursor: null, pending: null, failures: 0 });
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') {
+      // Not "no state yet": it may hold a pending batch the next save would
+      // overwrite. Move it aside like the corrupt branch (best-effort).
+      const moved = moveAside(file, 'unreadable');
+      log(`state file ${file} unreadable (${e.code || e.message}); ${moved}; starting fresh — any pending batch in it is not restored`);
+    }
+    return fresh();
+  }
+  let reason = null;
+  let j;
+  try { j = JSON.parse(raw); } catch (e) { reason = `not valid JSON (${e.message})`; }
+  if (!reason) {
+    const p = j && j.pending;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) reason = 'not a JSON object';
+    else if (!(j.cursor === null || typeof j.cursor === 'string')) reason = 'cursor is not a string or null';
+    else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string'))) reason = 'pending is malformed';
+  }
+  if (!reason) return { cursor: j.cursor, pending: j.pending, failures: 0 };
+  const moved = moveAside(file, 'corrupt');
+  log(`state file ${file} is corrupt (${reason}); ${moved}; reseeding — any pending batch in it is lost`);
+  return fresh();
+}
+
+function saveWebhookState(file, s, log) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ cursor: s.cursor, pending: s.pending }), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) { log(`state persist failed (${e.code || e.message})`); }
+}
+
+function startWebhookLoop(cfg) {
+  const log = (m) => process.stderr.write(`[beeperbox-mcp] webhook: ${m}\n`);
+  const file = webhookStatePath();
+  const st = loadWebhookState(file, log);
+  const save = (s) => saveWebhookState(file, s, log);
+  const post = (pending) => sendWebhook(cfg, pending);
+  const deps = { pollMessages, post, save, now: () => Date.now(), mode: cfg.mode, interval: cfg.interval, host: cfg.host, log };
+  const run = async () => {
+    let delay = cfg.interval;
+    try { delay = await webhookTick(st, deps); } catch (e) { log(`tick error: ${e.message}`); }
+    setTimeout(run, delay);
+  };
+  setTimeout(run, 0);
+}
+
 // ─── pick transport ───────────────────────────────────────────────
 
 // Only boot a transport when run as the entrypoint (`node server.js` /
 // `--stdio`). When require()'d — by the unit tests — skip the listeners and
 // just expose the pure helpers below.
 if (require.main === module) {
+  // Validate the webhook config BEFORE booting anything: a bad config must
+  // fail fast (non-zero exit), never silently disable the feature.
+  let webhookCfg;
+  try {
+    webhookCfg = webhookConfig(process.env);
+  } catch (e) {
+    process.stderr.write(`[beeperbox-mcp] webhook config error: ${e.message}\n`);
+    process.exit(1);
+  }
   if (process.argv.includes('--stdio')) {
     startStdioTransport();
   } else {
     startHttpTransport();
+  }
+  if (webhookCfg.enabled) {
+    for (const n of webhookCfg.notes) process.stderr.write(`[beeperbox-mcp] webhook: ${n}\n`);
+    process.stderr.write(`[beeperbox-mcp] webhook on: ${webhookCfg.host} interval=${webhookCfg.interval}ms mode=${webhookCfg.mode} signing=${webhookCfg.key ? 'on' : 'off'}\n`);
+    startWebhookLoop(webhookCfg);
   }
 }
 
@@ -1385,6 +1633,14 @@ module.exports = {
   TOOL_NAMES: TOOLS.map((t) => t.name),
   BIND_ADDR,
   ledgerPath,
+  webhookConfig,
+  webhookStatePath,
+  signWebhook,
+  sendWebhook,
+  buildWebhookPayload,
+  webhookTick,
+  loadWebhookState,
+  saveWebhookState,
   encodeCursor,
   decodeCursor,
   isAfterCursor,

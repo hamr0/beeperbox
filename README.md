@@ -156,6 +156,20 @@ Not a thin proxy over Beeper's raw API — an **opinionated 12-tool verb layer**
 
 Reliable echo-suppression (`source` + the optional `client_tag` idempotency tag) means an agent on a poll loop can send *and* watch the same chat without mistaking its own messages for inbound — the wiring that lets [multis](https://github.com/hamr0/multis) drop its text-prefix hacks.
 
+### Webhook (opt-in, experimental)
+
+Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **ping** when new messages arrive (off by default; the 12 tools are unchanged). It runs an internal `poll_messages` loop with its own persisted cursor, so a restart resumes where it left off. Limit: if the receiver is unreachable while more than 100 new messages arrive in one chat, the older ones can be skipped; the ping flags that chat with `possible_gap: true` and logs a warning, so catch up with `read_chat`.
+
+| Env | Default | |
+|---|---|---|
+| `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to `127.0.0.1` / `::1` / `localhost` only (not other 127.x or `localhost.`); no `user:pass@` credentials |
+| `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key (≥16 bytes, canonical base64); required unless the host is loopback |
+| `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | floor `1000` |
+| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` (falls back to the ping shape, `messages_omitted: true`, when a batch would exceed 64 KiB) |
+| `BEEPERBOX_WEBHOOK_STATE` | next to the sent-ledger | cursor + in-flight batch file |
+
+Payload (one POST per batch, `source:"api"` sends excluded): `{"type":"messages.new","timestamp":…,"data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`. Delivery is **at-least-once** — the cursor advances only on a 2xx, failures retry with backoff under the same `webhook-id` — so dedupe by message id. Signed with `webhook-id` / `webhook-timestamp` / `webhook-signature` (HMAC-SHA256). Redirects are not followed; a bad config exits at startup.
+
 ## Build from source
 
 Only if you're hacking on the image itself or running air-gapped:

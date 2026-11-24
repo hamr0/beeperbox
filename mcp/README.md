@@ -56,6 +56,7 @@ Full schemas and usage in the [main README](https://github.com/hamr0/beeperbox#t
 | `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
 | `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
 | `MCP_BIND_ADDR` | Interface the MCP server binds | `127.0.0.1` (loopback) |
+| `BEEPERBOX_WEBHOOK_URL` | Opt-in webhook target: POSTs a ping when new messages arrive (also `_SECRET`, `_INTERVAL_MS`, `_MODE`; see the [guide](https://github.com/hamr0/beeperbox/blob/master/docs/GUIDE.md#webhook-opt-in-experimental)) | unset (off) |
 
 ## Security
 
