@@ -666,6 +666,35 @@ test('pollMessages seed (multi-chat): ids from every chat tied at the high-water
   } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
 });
 
+test('pollMessages seed (fetch failure): a 5xx on a tied chat rejects the seed — no partial cursor; retry succeeds', async () => {
+  S._resetAccountCache();
+  const mk = (chat, id, ts) => ({ id, chatID: chat, timestamp: ts, text: id, type: 'TEXT' });
+  const state = {
+    chats: [
+      { id: 'A', title: 'a', accountID: 'matrix', lastActivity: T1 },
+      { id: 'B', title: 'b', accountID: 'matrix', lastActivity: T1 },
+    ],
+    msgs: { A: [mk('A', 'a-new', T1)], B: [mk('B', 'b-new', T1)] },
+  };
+  stubBeeper(state);
+  const stub = global.fetch;
+  let failB = true;
+  global.fetch = async (url, ...rest) => {
+    if (failB && /\/v1\/chats\/B\/messages/.test(String(url))) {
+      return { ok: false, status: 500, text: async () => 'boom' };
+    }
+    return stub(url, ...rest);
+  };
+  try {
+    await assert.rejects(() => S.pollMessages({}), /500/);
+    // "Call it again to retry": once the chat recovers, the seed is complete.
+    failB = false;
+    const seed = await S.pollMessages({});
+    assert.equal(seed.seeded, true);
+    assert.deepEqual([...S.decodeCursor(seed.cursor).ids].sort(), ['a-new', 'b-new']);
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
 // ── bearer-token guard: accept/reject matrix over real HTTP ────────
 // Pins the accept/reject behaviour of the MCP_AUTH_TOKEN check (exact match on
 // `Bearer <token>`, nothing else) so swapping the comparison for a
