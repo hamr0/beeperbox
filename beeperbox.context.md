@@ -192,7 +192,7 @@ while (true) {
 
 **Includes your own messages on purpose.** `sender.is_self` may be `true` — the owner messaging themselves in Note to self is a real inbound signal (often the command channel for an assistant). **To stop an agent from answering its own sends, branch on `source`, not `is_self`** (see the Message schema below): `source: "api"` means *this* beeperbox sent it via `send_message`/`note_to_self` — skip it; `source: "external"` is everything else, the human owner's own messages included.
 
-**Bounds (same as the rest of the API):** the inbox scan only sees Beeper's live-synced ~20 most-active chats (pin or `search_messages` for the long tail). `has_more: true` means there are *immediately fetchable* messages beyond this page — keep polling (the cursor advances) until it's `false`, then sleep. **Residual:** beeperbox fetches up to the newest 100 messages per chat per poll; if a single chat receives **more than 100** messages between two of your polls, the oldest of that burst can be missed (Beeper's messages endpoint returns only the newest N with no backward paging). Poll often enough that no chat exceeds ~100 between polls, or backfill that chat with `read_chat` / `search_messages`.
+**Bounds (same as the rest of the API):** the inbox scan only sees Beeper's live-synced ~20 most-active chats (pin or `search_messages` for the long tail). `has_more: true` means there are *immediately fetchable* messages beyond this page — keep polling (the cursor advances) until it's `false`, then sleep. **Residual:** beeperbox fetches up to the newest 100 messages per chat per poll; if a single chat receives **more than 100** messages between two of your polls, the oldest of that burst can be missed (Beeper's messages endpoint returns only the newest N with no backward paging). Poll often enough that no chat exceeds ~100 between polls, or backfill that chat with `read_chat` / `search_messages`. The response gains `gaps: [chat_id,…]` (only when non-empty) when a chat's full 100-message window never reaches the cursor — those chats may have skipped messages.
 
 ### `send_message`
 
@@ -534,7 +534,8 @@ Off unless `BEEPERBOX_WEBHOOK_URL` is set; the 12 tools and `poll_messages` are 
 
 - Env: `BEEPERBOX_WEBHOOK_URL` (https, or http to loopback only), `BEEPERBOX_WEBHOOK_SECRET` (`whsec_<base64>`, required unless loopback), `BEEPERBOX_WEBHOOK_INTERVAL_MS` (default 10000, floor 1000), `BEEPERBOX_WEBHOOK_MODE` (`ping` default | `full`). Invalid config exits at startup.
 - Payload: `{"type":"messages.new","timestamp","data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`; `full` adds `data.messages` (normalized Message objects) and falls back to the ping shape (`messages_omitted: true`) when a batch would exceed 64 KiB. `ping` carries no text/attachments/sender.
-- At-least-once: cursor advances only on 2xx; failures (incl. 3xx, timeout) retry the same `webhook-id` with backoff (cap 300s). Dedupe by message id.
+- At-least-once: cursor advances only on 2xx; failures (incl. 3xx, timeout) retry the same `webhook-id` with backoff (cap 300s). Dedupe by message id. Limit: polling pauses while a batch is pending, so >100 new messages in one chat during an outage can skip the oldest; that chat is flagged `possible_gap: true` in the payload + a stderr WARN (catch up with `read_chat`).
+- A corrupt `webhook-state.json` is moved to `.corrupt-<ms>` with a WARN and the webhook reseeds (a pending batch in it is lost).
 - Signing: `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256(key, "id.ts.body")>`. Redirects not followed.
 
 ## Transport summary

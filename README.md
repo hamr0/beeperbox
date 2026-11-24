@@ -158,7 +158,7 @@ Reliable echo-suppression (`source` + the optional `client_tag` idempotency tag)
 
 ### Webhook (opt-in, experimental)
 
-Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **ping** when new messages arrive (off by default; the 12 tools are unchanged). It runs an internal `poll_messages` loop with its own persisted cursor, so nothing is lost across restarts.
+Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **ping** when new messages arrive (off by default; the 12 tools are unchanged). It runs an internal `poll_messages` loop with its own persisted cursor, so a restart resumes where it left off. Limit: if the receiver is unreachable while more than 100 new messages arrive in one chat, the older ones can be skipped; the ping flags that chat with `possible_gap: true` and logs a warning, so catch up with `read_chat`.
 
 | Env | Default | |
 |---|---|---|

@@ -1016,3 +1016,99 @@ test('webhook config: secret must be canonical base64 of at least 16 bytes', () 
   // applies to loopback URLs too
   assert.throws(() => S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: 'http://127.0.0.1:9/x', BEEPERBOX_WEBHOOK_SECRET: 'whsec_' + enc(15) }), /at least 16 bytes/);
 });
+
+// ── outage gap: a full window that never reaches the cursor is flagged ──
+const gapMsgs = (n, startSec) => Array.from({ length: n }, (_, i) => {
+  const ts = new Date(Date.UTC(2026, 5, 15, 11, 0, startSec + n - 1 - i)).toISOString(); // newest first
+  return pm('g' + (startSec + n - 1 - i), ts);
+});
+
+test('pollMessages gaps: a full 100-message window entirely after the cursor flags the chat', async () => {
+  S._resetAccountCache();
+  const state = {
+    chats: [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: '2026-06-15T11:05:00.000Z' }],
+    msgs: { c1: gapMsgs(100, 0) },
+  };
+  stubBeeper(state);
+  try {
+    const cur = S.encodeCursor({ ts: T1, ids: [] });
+    const r = await S.pollMessages({ cursor: cur });
+    assert.deepEqual(r.gaps, ['c1']);
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
+test('pollMessages gaps: a window that overlaps the cursor (or is not full) has no gaps key', async () => {
+  S._resetAccountCache();
+  const full = gapMsgs(99, 1); // 99 new + 1 old = full window that reaches the cursor
+  full.push(pm('old', T0));
+  const state = {
+    chats: [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: '2026-06-15T11:05:00.000Z' }],
+    msgs: { c1: full },
+  };
+  stubBeeper(state);
+  try {
+    const cur = S.encodeCursor({ ts: T1, ids: [] });
+    const r = await S.pollMessages({ cursor: cur });
+    assert.ok(!('gaps' in r));
+    state.msgs.c1 = gapMsgs(50, 0); // not full
+    const r2 = await S.pollMessages({ cursor: cur });
+    assert.ok(!('gaps' in r2));
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
+test('webhookTick: gaps mark the chat possible_gap, log a WARN without text, and a gap-only chat just logs', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C1', has_more: false, gaps: ['c1', 'c2'], messages: [wm('m1', 'c1', '2026-06-15T10:00:00.000Z')] }] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  const chats = JSON.parse(h.posts[0].body).data.chats;
+  assert.equal(chats.length, 1);
+  assert.equal(chats[0].possible_gap, true);
+  assert.equal(h.logs.filter((l) => /possible gap/.test(l)).length, 2);
+  assert.ok(!h.logs.join('\n').includes('SECRET TEXT'));
+  // no gaps → no key
+  const h2 = whHarness({ polls: [{ cursor: 'C1', has_more: false, messages: [wm('m1', 'c1', '2026-06-15T10:00:00.000Z')] }] });
+  await S.webhookTick({ cursor: 'C0', pending: null, failures: 0 }, h2.deps);
+  assert.ok(!('possible_gap' in JSON.parse(h2.posts[0].body).data.chats[0]));
+});
+
+// ── webhook state: corrupt files are moved aside, never silently reseeded ──
+function whTmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'whstate-')); }
+const FRESH = { cursor: null, pending: null, failures: 0 };
+
+test('webhook state: save -> load round-trips cursor and pending; mode 0600', () => {
+  const d = whTmp(); const f = path.join(d, 'sub', 'ws.json'); const logs = [];
+  const st = { cursor: 'C9', pending: { id: 'msg_1', body: '{"a":1}', next_cursor: 'C10' }, failures: 3 };
+  S.saveWebhookState(f, st, (m) => logs.push(m));
+  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: 'C9', pending: st.pending, failures: 0 });
+  assert.equal(fs.statSync(f).mode & 0o777, 0o600);
+  assert.deepEqual(logs, []);
+});
+
+test('webhook state: missing file -> fresh, silently', () => {
+  const d = whTmp(); const logs = [];
+  assert.deepEqual(S.loadWebhookState(path.join(d, 'nope.json'), (m) => logs.push(m)), FRESH);
+  assert.deepEqual(logs, []);
+});
+
+for (const [name, content] of [['truncated JSON', '{"cursor":"C1","pend'], ['wrong field names', '{"cursr":"x"}'], ['empty file', ''], ['bad pending', '{"cursor":"C","pending":{"id":1}}'], ['not an object', '[1]']]) {
+  test(`webhook state: ${name} -> WARN, moved to .corrupt-*, fresh`, () => {
+    const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+    fs.writeFileSync(f, content);
+    assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), FRESH);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /corrupt|invalid/i);
+    assert.ok(!fs.existsSync(f));
+    const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.corrupt-'));
+    assert.equal(moved.length, 1);
+    assert.equal(fs.readFileSync(path.join(d, moved[0]), 'utf8'), content);
+  });
+}
+
+test('webhookTick: a gap chat with no message in the batch logs "in one chat" (no bogus network)', async () => {
+  const h = whHarness({ polls: [{ cursor: 'C1', has_more: false, gaps: ['cX'], messages: [] }] });
+  await S.webhookTick({ cursor: 'C0', pending: null, failures: 0 }, h.deps);
+  const w = h.logs.filter((l) => /possible gap/.test(l));
+  assert.equal(w.length, 1);
+  assert.match(w[0], /in one chat since/);
+  assert.equal(h.posts.length, 0);
+});

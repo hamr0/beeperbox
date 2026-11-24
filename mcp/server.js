@@ -863,7 +863,7 @@ const TOOLS = [
   },
   {
     name: 'poll_messages',
-    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping.',
+    description: 'Passive "what is new since I last looked?" feed — the watch primitive for a poll loop. Returns every message that arrived after an opaque cursor, across all recent chats (or one chat if chat_id is given), each as the normalized Message schema. It is READ-ONLY: it never marks anything read, never archives, never mutates — call it as often as you like with zero side effects. First call (omit cursor) SEEDS: it returns {cursor, messages: [], seeded: true} — an empty backlog and a starting cursor meaning "from now". Persist that cursor; pass it back next call to receive only messages newer than it, plus a fresh cursor. The cursor is restart-safe: save it to disk and resume across process/container restarts with no missed or duplicated messages. Includes the account\'s own messages (sender.is_self may be true) on purpose — the owner messaging themselves in Note to self is a real inbound signal. To avoid an agent answering its own sends, branch on the `source` field, NOT is_self: source is "api" for messages this beeperbox sent via send_message / note_to_self (skip these), "external" for everything else (the human owner\'s own messages included). If has_more is true, more messages are waiting beyond this page — poll again immediately with the returned cursor before sleeping. If the response carries `gaps` (a list of chat ids), more than 100 new messages arrived in those chats since the last poll, so older ones may have been skipped — catch up with read_chat.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -949,17 +949,25 @@ async function pollMessages(args) {
     : chats.filter((c) => !c.last_message_at || c.last_message_at >= cur.ts);
 
   const fresh = [];
+  const gaps = [];
   for (const c of candidates) {
     const msgRaw = await beeperFetch(`/v1/chats/${encodeURIComponent(c.id)}/messages?limit=${fetchLimit}`);
     const mlist = msgRaw.items || msgRaw.messages || (Array.isArray(msgRaw) ? msgRaw : []);
+    let allAfter = mlist.length > 0;
     for (const m of mlist.map((x) => normalizeMessage(x, c))) {
       if (isAfterCursor(m, cur)) fresh.push(m);
+      else allAfter = false;
     }
+    // A full window that never reaches back to the cursor: older new messages
+    // in this chat may have been skipped (Beeper pages newest-only).
+    if (mlist.length >= fetchLimit && allAfter) gaps.push(c.id);
   }
 
   const { delivered, next, hasMore } = selectDelivery(fresh, cur, page);
   const tagged = applyEchoTags(delivered, Date.now());
-  return { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
+  const out = { cursor: encodeCursor(next), messages: tagged, has_more: hasMore };
+  if (gaps.length) out.gaps = gaps;
+  return out;
 }
 
 async function callTool(name, args) {
@@ -1425,7 +1433,7 @@ function signWebhook(key, id, ts, body) {
 
 // Pure: envelope for one batch. Ping mode carries ids/counts only — no text,
 // attachments or sender data. Full mode adds the normalized messages.
-function buildWebhookPayload(messages, mode, now) {
+function buildWebhookPayload(messages, mode, now, gaps) {
   const byChat = new Map();
   for (const m of messages) {
     let c = byChat.get(m.chat_id);
@@ -1434,6 +1442,7 @@ function buildWebhookPayload(messages, mode, now) {
     c.message_ids.push(m.id);
     if (m.timestamp && (!c.latest_at || m.timestamp > c.latest_at)) c.latest_at = m.timestamp;
   }
+  if (gaps) for (const g of gaps) { const c = byChat.get(g); if (c) c.possible_gap = true; }
   const data = { chats: [...byChat.values()] };
   const env = { type: 'messages.new', timestamp: new Date(now).toISOString(), data };
   if (mode === 'full') {
@@ -1472,6 +1481,11 @@ async function webhookTick(st, deps) {
       return interval;
     }
     const msgs = r.messages.filter((m) => m.source !== 'api');
+    for (const g of r.gaps || []) {
+      const net = (r.messages.find((m) => m.chat_id === g) || {}).network;
+      const where = net ? `one ${net} chat` : 'one chat';
+      deps.log(`possible gap: >100 new messages in ${where} since the last delivery; older ones may be missing — catch up with read_chat`);
+    }
     if (msgs.length === 0) {
       if (r.cursor !== st.cursor) { // advance past skipped api messages; no write when idle
         st.cursor = r.cursor;
@@ -1481,7 +1495,7 @@ async function webhookTick(st, deps) {
     }
     st.pending = {
       id: 'msg_' + crypto.randomUUID(),
-      body: JSON.stringify(buildWebhookPayload(msgs, deps.mode, deps.now())),
+      body: JSON.stringify(buildWebhookPayload(msgs, deps.mode, deps.now(), r.gaps)),
       next_cursor: r.cursor,
     };
     deps.save(st);
@@ -1516,22 +1530,47 @@ async function sendWebhook(cfg, pending, fetchFn = fetch, nowMs = Date.now) {
   return res.status;
 }
 
+// Missing file → fresh, silently. An unreadable or invalid file is NOT the same
+// as "no state yet": it may hold a pending batch, so warn loudly and (for an
+// invalid one) move it aside rather than silently reseed over it.
+function loadWebhookState(file, log) {
+  const fresh = () => ({ cursor: null, pending: null, failures: 0 });
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') log(`state file ${file} unreadable (${e.code || e.message}); starting fresh`);
+    return fresh();
+  }
+  let reason = null;
+  let j;
+  try { j = JSON.parse(raw); } catch (e) { reason = `not valid JSON (${e.message})`; }
+  if (!reason) {
+    const p = j && j.pending;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) reason = 'not a JSON object';
+    else if (!(j.cursor === null || typeof j.cursor === 'string')) reason = 'cursor is not a string or null';
+    else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string'))) reason = 'pending is malformed';
+  }
+  if (!reason) return { cursor: j.cursor, pending: j.pending, failures: 0 };
+  const aside = `${file}.corrupt-${Date.now()}`;
+  let moved = '';
+  try { fs.renameSync(file, aside); moved = `; moved to ${aside}`; } catch { /* best-effort */ }
+  log(`state file ${file} is corrupt (${reason})${moved}; reseeding — any pending batch in it is lost`);
+  return fresh();
+}
+
+function saveWebhookState(file, s, log) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ cursor: s.cursor, pending: s.pending }), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) { log(`state persist failed (${e.code || e.message})`); }
+}
+
 function startWebhookLoop(cfg) {
   const log = (m) => process.stderr.write(`[beeperbox-mcp] webhook: ${m}\n`);
   const file = webhookStatePath();
-  let st = { cursor: null, pending: null, failures: 0 };
-  try {
-    const j = JSON.parse(fs.readFileSync(file, 'utf8'));
-    st = { cursor: j.cursor || null, pending: j.pending || null, failures: 0 };
-  } catch { /* no state yet → seed */ }
-  const save = (s) => {
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ cursor: s.cursor, pending: s.pending }), { mode: 0o600 });
-      fs.renameSync(tmp, file);
-    } catch (e) { log(`state persist failed (${e.code || e.message})`); }
-  };
+  const st = loadWebhookState(file, log);
+  const save = (s) => saveWebhookState(file, s, log);
   const post = (pending) => sendWebhook(cfg, pending);
   const deps = { pollMessages, post, save, now: () => Date.now(), mode: cfg.mode, interval: cfg.interval, host: cfg.host, log };
   const run = async () => {
@@ -1585,6 +1624,8 @@ module.exports = {
   sendWebhook,
   buildWebhookPayload,
   webhookTick,
+  loadWebhookState,
+  saveWebhookState,
   encodeCursor,
   decodeCursor,
   isAfterCursor,
