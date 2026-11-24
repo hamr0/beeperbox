@@ -171,7 +171,7 @@ The **watch primitive** — a passive "what's new since I last looked?" feed for
 
 How the loop works:
 
-1. **Seed.** First call, omit `cursor`. You get back `{cursor, messages: [], seeded: true}` — an empty backlog and a starting cursor meaning *"from now"*. (The single most-recent existing message may surface once on the next poll — a documented seed-boundary effect, never a miss.)
+1. **Seed.** First call, omit `cursor`. You get back `{cursor, messages: [], seeded: true}` — an empty backlog and a starting cursor meaning *"from now"*. (The seed also marks the existing messages at the high-water timestamp as seen, so nothing that already existed is redelivered on the next poll; a genuinely new message arriving in that same second is still delivered, except one that lands while the seed call itself is running, which counts as already there, consistent with "from now". A seed can fail if Beeper errors while it reads the newest chats; call it again to retry.)
 2. **Poll.** Pass the cursor back. You receive only messages newer than it, oldest-first, plus a fresh cursor. Persist the new cursor.
 3. **Repeat.** Sleep your chosen interval (the *policy* is yours — beeperbox only provides the *ability*), then poll again with the latest cursor.
 

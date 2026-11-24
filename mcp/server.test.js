@@ -93,10 +93,12 @@ test('a full poll walk delivers each message exactly once, even across a "restar
     { id: 'm1', timestamp: '2026-06-15T10:00:01.000Z' },
   ];
   // Seed from "now" = newest existing message.
-  let cur = S.decodeCursor(S.encodeCursor({ ts: '2026-06-15T10:00:02.000Z', ids: [] }));
-  // Seed boundary: the message exactly at the seed ts surfaces once; older does not.
+  let cur;
+  // Seed marks the existing message(s) at the high-water ts as seen (the real
+  // seed returns their ids), so nothing existing surfaces on the first poll.
+  cur = S.decodeCursor(S.encodeCursor({ ts: '2026-06-15T10:00:02.000Z', ids: ['m2'] }));
   let fresh = round1.filter((m) => S.isAfterCursor(m, cur));
-  assert.deepEqual(fresh.map((m) => m.id), ['m2']);
+  assert.deepEqual(fresh.map((m) => m.id), []);
   cur = S.advanceCursor(cur, fresh);
 
   // New messages arrive, including two sharing a millisecond.
@@ -572,4 +574,163 @@ test('normalizeAccount surfaces the backend connection status (observability)', 
   assert.equal(out.status, 'connecting', 'status must be relayed so connecting != connected is visible');
   assert.equal(out.network, 'telegram');
   assert.equal(out.account_id, 'telegram');
+});
+
+// ── poll_messages seed: existing high-water messages are marked seen ──
+// Old code seeded {ts: maxTs, ids: []}, so the first poll redelivered EVERY
+// existing message sharing the high-water ts (live: 5 old WhatsApp messages).
+function stubBeeper(state) {
+  global.fetch = async (url) => {
+    const u = String(url);
+    let body;
+    if (u.includes('/v1/accounts')) body = [acct('matrix', 'Beeper')];
+    else if (/\/v1\/chats\/[^/?]+\/messages/.test(u)) {
+      const id = decodeURIComponent(u.match(/\/v1\/chats\/([^/?]+)\/messages/)[1]);
+      body = { items: state.msgs[id] || [] };
+    } else if (/\/v1\/chats\/[^/?]+$/.test(u)) {
+      const id = decodeURIComponent(u.match(/\/v1\/chats\/([^/?]+)$/)[1]);
+      body = state.chats.find((c) => c.id === id);
+    } else if (u.includes('/v1/chats')) body = { items: state.chats };
+    else body = {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  };
+}
+const T0 = '2026-06-15T10:00:00.000Z';
+const T1 = '2026-06-15T10:00:05.000Z';
+const pm = (id, ts) => ({ id, chatID: 'c1', timestamp: ts, text: id, type: 'TEXT' });
+
+for (const mode of ['inbox', 'chat_id']) {
+  test(`pollMessages seed (${mode}): no redelivery of existing high-water msgs; a new same-ts msg is still delivered`, async () => {
+    S._resetAccountCache();
+    const state = {
+      chats: [{ id: 'c1', title: 'one', accountID: 'matrix', lastActivity: T1 }],
+      msgs: { c1: [pm('b', T1), pm('a', T1), pm('old', T0)] },
+    };
+    stubBeeper(state);
+    const base = mode === 'chat_id' ? { chat_id: 'c1' } : {};
+    try {
+      const seed = await S.pollMessages({ ...base });
+      assert.equal(seed.seeded, true);
+      assert.deepEqual(seed.messages, []);
+      assert.equal(seed.has_more, false);
+      const sc = S.decodeCursor(seed.cursor);
+      assert.equal(sc.ts, T1);
+      assert.deepEqual([...sc.ids].sort(), ['a', 'b']);
+
+      // Same data again: zero messages (old code: a and b both redelivered).
+      const p1 = await S.pollMessages({ ...base, cursor: seed.cursor });
+      assert.deepEqual(p1.messages, []);
+
+      // A genuinely new message in the SAME second must still arrive (never-miss).
+      state.msgs.c1 = [pm('new', T1), pm('b', T1), pm('a', T1), pm('old', T0)];
+      const p2 = await S.pollMessages({ ...base, cursor: p1.cursor });
+      assert.deepEqual(p2.messages.map((m) => m.id), ['new']);
+    } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+  });
+}
+
+test('pollMessages seed (multi-chat): ids from every chat tied at the high-water ts; older chats are not fetched; no redelivery', async () => {
+  S._resetAccountCache();
+  const mk = (chat, id, ts) => ({ id, chatID: chat, timestamp: ts, text: id, type: 'TEXT' });
+  const state = {
+    chats: [
+      { id: 'A', title: 'a', accountID: 'matrix', lastActivity: T1 },
+      { id: 'B', title: 'b', accountID: 'matrix', lastActivity: T1 },
+      { id: 'C', title: 'c', accountID: 'matrix', lastActivity: T0 },
+    ],
+    msgs: {
+      A: [mk('A', 'a-new', T1), mk('A', 'a-old', T0)],
+      B: [mk('B', 'b-new', T1), mk('B', 'b-old', T0)],
+      C: [mk('C', 'c-old', T0)],
+    },
+  };
+  stubBeeper(state);
+  const stub = global.fetch;
+  const msgFetches = [];
+  global.fetch = async (url, ...rest) => {
+    const m = String(url).match(/\/v1\/chats\/([^/?]+)\/messages/);
+    if (m) msgFetches.push(decodeURIComponent(m[1]));
+    return stub(url, ...rest);
+  };
+  try {
+    const seed = await S.pollMessages({});
+    assert.equal(seed.seeded, true);
+    const sc = S.decodeCursor(seed.cursor);
+    assert.equal(sc.ts, T1);
+    assert.deepEqual([...sc.ids].sort(), ['a-new', 'b-new']);
+    assert.deepEqual([...msgFetches].sort(), ['A', 'B'], 'seed must fetch only chats tied at maxTs (not C)');
+    assert.ok(!msgFetches.includes('C'));
+
+    const p1 = await S.pollMessages({ cursor: seed.cursor });
+    assert.deepEqual(p1.messages, []);
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
+test('pollMessages seed (fetch failure): a 5xx on a tied chat rejects the seed — no partial cursor; retry succeeds', async () => {
+  S._resetAccountCache();
+  const mk = (chat, id, ts) => ({ id, chatID: chat, timestamp: ts, text: id, type: 'TEXT' });
+  const state = {
+    chats: [
+      { id: 'A', title: 'a', accountID: 'matrix', lastActivity: T1 },
+      { id: 'B', title: 'b', accountID: 'matrix', lastActivity: T1 },
+    ],
+    msgs: { A: [mk('A', 'a-new', T1)], B: [mk('B', 'b-new', T1)] },
+  };
+  stubBeeper(state);
+  const stub = global.fetch;
+  let failB = true;
+  global.fetch = async (url, ...rest) => {
+    if (failB && /\/v1\/chats\/B\/messages/.test(String(url))) {
+      return { ok: false, status: 500, text: async () => 'boom' };
+    }
+    return stub(url, ...rest);
+  };
+  try {
+    await assert.rejects(() => S.pollMessages({}), /500/);
+    // "Call it again to retry": once the chat recovers, the seed is complete.
+    failB = false;
+    const seed = await S.pollMessages({});
+    assert.equal(seed.seeded, true);
+    assert.deepEqual([...S.decodeCursor(seed.cursor).ids].sort(), ['a-new', 'b-new']);
+  } finally { global.fetch = REAL_FETCH; S._resetAccountCache(); }
+});
+
+// ── bearer-token guard: accept/reject matrix over real HTTP ────────
+// Pins the accept/reject behaviour of the MCP_AUTH_TOKEN check (exact match on
+// `Bearer <token>`, nothing else) so swapping the comparison for a
+// constant-time one cannot change who gets in. Real child server, no stubs.
+test('bearer guard: only the exact `Bearer <token>` header is accepted (401 for everything else, incl. other lengths and no header)', async () => {
+  const { spawn } = require('node:child_process');
+  const net = require('node:net');
+  const port = await new Promise((resolve) => {
+    const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)); });
+  });
+  const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
+    env: { ...process.env, MCP_PORT: String(port), MCP_AUTH_TOKEN: 'ci-secret', BEEPERBOX_PREFLIGHT: '0', BEEPER_TOKEN: 'test-token' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bearer-guard test server never logged "listening"')), 5000);
+      child.stdout.on('data', (d) => { if (String(d).includes('listening')) { clearTimeout(timer); resolve(); } });
+      child.on('exit', (c) => reject(new Error(`bearer-guard test server exited early (${c})`)));
+    });
+    const status = async (headers) => (await fetch(`http://127.0.0.1:${port}/`, {
+      method: 'POST', headers, body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+    })).status;
+    const cases = [
+      ['correct token', { Authorization: 'Bearer ci-secret' }, 200],
+      ['no header', {}, 401],
+      ['empty header', { Authorization: '' }, 401],
+      ['wrong, same length', { Authorization: 'Bearer ci-secreX' }, 401],
+      ['wrong, shorter', { Authorization: 'Bearer ci-' }, 401],
+      ['wrong, longer', { Authorization: 'Bearer ci-secret-and-more' }, 401],
+      ['bare token, no scheme', { Authorization: 'ci-secret' }, 401],
+      ['lowercase scheme', { Authorization: 'bearer ci-secret' }, 401],
+      ['scheme only', { Authorization: 'Bearer ' }, 401],
+    ];
+    for (const [name, headers, want] of cases) {
+      assert.equal(await status(headers), want, name);
+    }
+  } finally { child.kill(); }
 });

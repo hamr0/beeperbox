@@ -49,6 +49,8 @@ jobs:
     steps:
       - name: Resolve ref
         id: ref
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             git_ref=$(git ls-remote --tags --sort=-v:refname https://github.com/${{ github.repository }}.git 'v*.*.*' \
@@ -60,7 +62,7 @@ jobs:
             fi
             echo "ref=$git_ref" >> "$GITHUB_OUTPUT"
           else
-            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "ref=$REF_NAME" >> "$GITHUB_OUTPUT"
           fi
 
       # The Beeper version is PINNED in beeper-version.txt and read from the

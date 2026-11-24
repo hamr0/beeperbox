@@ -12,6 +12,24 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the Beeper version pinned in `beeper-version.txt`), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; promote it by bumping the pin), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
+## [0.9.4] — 2026-11-24 `[PATCH]`
+
+### Fixed
+
+- `poll_messages` seed no longer redelivers existing messages. The seed cursor was `{ts: <high-water>, ids: []}`, so the first poll treated every existing message sharing the high-water timestamp as new (live: 5 old WhatsApp messages), which could replay an old owner command in a consumer. The seed now records the ids of the existing messages at that timestamp, so they are marked seen; a genuinely new message in the same second is still delivered. Both the inbox and `chat_id` seed paths. (The handler body moved into `pollMessages(args)`, behavior otherwise unchanged.)
+
+### Security
+
+- Hardening, no behavior change: the optional `MCP_AUTH_TOKEN` bearer check now compares the `Authorization` header in constant time (both sides hashed with sha256, then `crypto.timingSafeEqual`), so response timing cannot leak the token. A child-server test pins the 9-case accept/reject matrix (200/401) and goes red on deliberately broken compares. `release.yml` also passes `github.ref_name` to the shell through `env` instead of interpolating it into the `run` body.
+
+### Changed
+
+- The `poll_messages` seed fetch uses the shared `fetchLimit` constant instead of a hardcoded `100`. No behavior change.
+
+### Docs
+
+- `docs/GUIDE.md` and `beeperbox.context.md` note the seed's same-second behavior and that a failed seed can be retried by calling `poll_messages` again.
+
 ## [0.9.3] — 2026-11-23 `[PATCH]`
 
 ### Docs
