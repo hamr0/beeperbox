@@ -162,7 +162,7 @@ Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **pi
 
 | Env | Default | |
 |---|---|---|
-| `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to a loopback host only |
+| `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to `127.0.0.1` / `::1` / `localhost` only (not other 127.x or `localhost.`) |
 | `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key (≥16 bytes, canonical base64); required unless the host is loopback |
 | `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | floor `1000` |
 | `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` (falls back to the ping shape, `messages_omitted: true`, when a batch would exceed 64 KiB) |
