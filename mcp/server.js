@@ -1396,6 +1396,9 @@ function webhookConfig(env) {
   if (!rawUrl) return { enabled: false };
   let u;
   try { u = new URL(rawUrl); } catch { throw new Error('BEEPERBOX_WEBHOOK_URL is not a valid URL'); }
+  if (u.username || u.password) {
+    throw new Error('BEEPERBOX_WEBHOOK_URL must not contain credentials (user:pass@) — use BEEPERBOX_WEBHOOK_SECRET for signing');
+  }
   const loopback = LOOPBACK_HOSTS.has(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) {
     throw new Error('BEEPERBOX_WEBHOOK_URL must be https:// (http:// is allowed only for a loopback host)');

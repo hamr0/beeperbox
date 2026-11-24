@@ -629,7 +629,7 @@ If you'd rather be woken than poll, set `BEEPERBOX_WEBHOOK_URL`. beeperbox then 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BEEPERBOX_WEBHOOK_URL` | unset | Target. `https://`, or `http://` only for `127.0.0.1` / `::1` / `localhost`. Bad value = startup error. |
+| `BEEPERBOX_WEBHOOK_URL` | unset | Target. `https://`, or `http://` only for `127.0.0.1` / `::1` / `localhost`; no `user:pass@` credentials. Bad value = startup error. |
 | `BEEPERBOX_WEBHOOK_SECRET` | — | Standard Webhooks secret (`whsec_<base64>`). Required for non-loopback URLs. |
 | `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | Poll cadence; values under `1000` are raised to `1000`. |
 | `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` or `full`. |

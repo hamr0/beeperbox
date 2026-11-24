@@ -749,6 +749,17 @@ test('webhook config: http to a non-loopback host is rejected', () => {
   assert.throws(() => S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_URL: 'not a url' })), /valid URL/);
 });
 
+test('webhook config: URL with userinfo credentials is rejected without echoing it', () => {
+  for (const u of ['https://user:pw@host/hook', 'https://user@host/hook']) {
+    let err;
+    try { S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_URL: u })); } catch (e) { err = e; }
+    assert.ok(err, `expected throw for ${u}`);
+    assert.match(err.message, /must not contain credentials/);
+    assert.ok(!/pw|user|hook/.test(err.message.replace(/BEEPERBOX_WEBHOOK_(SECRET|URL)|user:pass@/g, '')), err.message);
+  }
+  assert.equal(S.webhookConfig(whEnv({ BEEPERBOX_WEBHOOK_URL: 'https://host.example.com/hook' })).enabled, true);
+});
+
 test('webhook config: https without a secret is rejected; loopback http without one is allowed', () => {
   assert.throws(() => S.webhookConfig({ BEEPERBOX_WEBHOOK_URL: 'https://hooks.example.com/x' }), /SECRET is required/);
   for (const u of ['http://127.0.0.1:9/x', 'http://localhost:9/x', 'http://[::1]:9/x']) {
