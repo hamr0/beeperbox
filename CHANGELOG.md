@@ -12,6 +12,14 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the Beeper version pinned in `beeper-version.txt`), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; promote it by bumping the pin), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
+## [0.10.1] — 2026-11-25 `[PATCH]`
+
+Docs only. No runtime change.
+
+### Changed
+
+- **README compacted (205 → 144 lines).** The two run modes now share one comparison table, with short "Container" and "Lite" quick starts and a common "Connect a client" step. The 12 MCP tools and the opt-in webhook are one table (read / write / watch / push); the webhook's full contract (payload, headers, state file) now lives only in `docs/GUIDE.md`. "Docs" and "Related" merged into one list.
+
 ## [0.10.0] — 2026-11-24 `[MINOR]`
 
 An opt-in outbound webhook (#41) and a `poll_messages` gap signal, plus a fix for an empty-inbox seed replay present since 0.6.0. MINOR per the versioning policy: new runtime behavior and a new optional schema field (`gaps`).
