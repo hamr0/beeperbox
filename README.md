@@ -47,7 +47,7 @@ The image is `ghcr.io/hamr0/beeperbox:latest`, built for amd64 and arm64. Pin a 
 > `:previous` rolls back beeperbox, not Beeper's data. Once a newer Beeper has opened your volume, it upgrades the database and an older Beeper can't open it again. To keep a guaranteed way back, back up the volume before pulling a new `:latest`:
 
 ```sh
-mkdir -p ~/beeperbox-backups
+mkdir -p ~/beeperbox-backups && chmod 700 ~/beeperbox-backups
 docker compose stop
 docker run --rm -v beeperbox_beeperbox_config:/data -v ~/beeperbox-backups:/backup:Z alpine tar czf /backup/beeperbox-config-$(date +%F).tar.gz -C /data .
 ls -l ~/beeperbox-backups

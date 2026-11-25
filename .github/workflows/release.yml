@@ -93,7 +93,6 @@ jobs:
         env:
           REF: ${{ steps.ref.outputs.ref }}
           IMAGE: ${{ github.repository }}
-          OVERRIDE: ${{ vars.BEEPER_VERSION_OVERRIDE }}
         run: |
           pin=".release-ref/beeper-version.txt"
           if [ ! -f "$pin" ]; then
@@ -104,19 +103,6 @@ jobs:
           if [ -z "$pinned" ]; then
             echo "::error::Pinned Beeper version resolved empty"
             exit 1
-          fi
-          if [ -n "$OVERRIDE" ]; then
-            # Repo variable BEEPER_VERSION_OVERRIDE: the way past a promoted Beeper that fails the gates on released code.
-            if [[ ! "$OVERRIDE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::BEEPER_VERSION_OVERRIDE '$OVERRIDE' is not X.Y.Z; fix or delete the repository variable"
-              exit 1
-            fi
-            # shellcheck source=scripts/beeper-artifacts-lib.sh
-            source scripts/beeper-artifacts-lib.sh
-            beeper_check_artifacts "$OVERRIDE" release-override || exit 1
-            echo "Beeper $OVERRIDE (override: BEEPER_VERSION_OVERRIDE repo variable)"
-            echo "version=$OVERRIDE" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
           v="$(bash scripts/promoted-beeper-version.sh "$IMAGE" --floor "$pinned")"
           if [ "$v" = "$pinned" ]; then
