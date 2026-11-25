@@ -1462,6 +1462,27 @@ function buildWebhookPayload(messages, mode, now, gaps) {
   return env;
 }
 
+// Why a fetch failed (ECONNREFUSED, …); undefined when there is no cause.
+const fetchCause = (e) => e.cause && (e.cause.code || e.cause.message);
+
+// "Can't reach Beeper": a bare fetch network failure (TypeError + cause). Beeper
+// HTTP errors and local errors (bad cursor, no token) are rpcErrors, not this.
+const isNetworkError = (e) => e.name === 'TypeError' && !!e.cause;
+
+// A failed seed/poll. Network failures log once per outage (st.waiting);
+// anything else logs every time, as before.
+function webhookFetchFailed(st, deps, what, e) {
+  if (!isNetworkError(e)) { deps.log(`${what} failed: ${e.message}`); return; }
+  if (st.waiting) return;
+  st.waiting = true;
+  deps.log(`waiting for Beeper API (${fetchCause(e) || e.message})`);
+}
+function webhookFetchOk(st, deps) {
+  if (!st.waiting) return;
+  st.waiting = false;
+  deps.log('Beeper API reachable');
+}
+
 // One loop step. `st` = { cursor, pending, failures }. deps = { pollMessages,
 // post(pending) → HTTP status (throws on network error), save(st), now(), mode,
 // interval, host, log }. Returns the delay (ms) before the next tick.
@@ -1472,10 +1493,11 @@ async function webhookTick(st, deps) {
     // Never fall back to an empty cursor: a failed seed just retries.
     try {
       const r = await deps.pollMessages({});
+      webhookFetchOk(st, deps);
       st.cursor = r.cursor;
       deps.save(st);
     } catch (e) {
-      deps.log(`seed failed: ${e.message}`);
+      webhookFetchFailed(st, deps, 'seed', e);
     }
     return interval;
   }
@@ -1484,9 +1506,10 @@ async function webhookTick(st, deps) {
     try {
       r = await deps.pollMessages({ cursor: st.cursor, limit: 100 });
     } catch (e) {
-      deps.log(`poll failed: ${e.message}`);
+      webhookFetchFailed(st, deps, 'poll', e);
       return interval;
     }
+    webhookFetchOk(st, deps);
     const msgs = r.messages.filter((m) => m.source !== 'api');
     for (const g of r.gaps || []) {
       const net = (r.messages.find((m) => m.chat_id === g) || {}).network;
@@ -1514,13 +1537,23 @@ async function webhookTick(st, deps) {
       st.cursor = st.pending.next_cursor;
       st.pending = null;
       st.failures = 0;
+      st.authRejects = 0;
+      st.authWarned = false;
       deps.save(st);
       return hasMore ? 0 : interval;
     }
     deps.log(`POST to ${deps.host} failed: HTTP ${status}`);
+    if (status === 401 || status === 403) {
+      st.authRejects = (st.authRejects || 0) + 1;
+      if (st.authRejects >= 3 && !st.authWarned) {
+        st.authWarned = true;
+        deps.log(`${deps.host} rejected 3 deliveries in a row (HTTP ${status}) — check BEEPERBOX_WEBHOOK_SECRET and BEEPERBOX_WEBHOOK_URL; still retrying`);
+      }
+    } else st.authRejects = 0;
   } catch (e) {
+    st.authRejects = 0;
     const why = e.name === 'TimeoutError' ? 'timeout' : e.message;
-    const cause = e.cause && (e.cause.code || e.cause.message);
+    const cause = fetchCause(e);
     deps.log(`POST to ${deps.host} failed: ${why}${cause ? ` (${cause})` : ''}`);
   }
   st.failures = (st.failures || 0) + 1;
@@ -1545,6 +1578,10 @@ function moveAside(file, tag) {
   try { fs.renameSync(file, aside); return `moved to ${aside}`; } catch (e) { return `could not be moved aside (${e.code || e.message}) and may be overwritten`; }
 }
 
+function cursorDecodes(c) {
+  try { decodeCursor(c); return true; } catch { return false; }
+}
+
 function loadWebhookState(file, log) {
   const fresh = () => ({ cursor: null, pending: null, failures: 0 });
   let raw;
@@ -1564,6 +1601,7 @@ function loadWebhookState(file, log) {
     const p = j && j.pending;
     if (!j || typeof j !== 'object' || Array.isArray(j)) reason = 'not a JSON object';
     else if (!(j.cursor === null || typeof j.cursor === 'string')) reason = 'cursor is not a string or null';
+    else if (j.cursor && !cursorDecodes(j.cursor)) reason = 'cursor is malformed';
     else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string'))) reason = 'pending is malformed';
   }
   if (!reason) return { cursor: j.cursor, pending: j.pending, failures: 0 };

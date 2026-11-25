@@ -20,6 +20,12 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 - **`:previous` rolls only on change.** Images now carry `io.beeperbox.beeper-version` and an explicit `org.opencontainers.image.revision` (the release ref's commit); `:latest` is rolled to `:previous` only if either differs from what is being published. Previously the weekly cron overwrote `:previous` with an image identical to `:latest`.
 - Caveat, documented in the README: `:previous` rolls back beeperbox, not Beeper's data. A newer Beeper upgrades the volume's database and an older one can't open it again, so back up the volume before pulling a new `:latest`.
 
+### Fixed
+
+- **Webhook: a garbage `cursor` in `webhook-state.json` no longer loops forever.** A hand-edited or damaged state file with a non-decodable cursor loaded as valid, then every tick logged `poll failed: malformed cursor` and never reseeded. It is now treated like any other corrupt state file: moved aside to `webhook-state.json.corrupt-<ms>`, warned, and reseeded.
+- **Webhook: repeated 401/403 now point at the secret.** After 3 consecutive auth rejections, one line is logged: `webhook: <host> rejected 3 deliveries in a row (HTTP <status>) — check BEEPERBOX_WEBHOOK_SECRET and BEEPERBOX_WEBHOOK_URL; still retrying`. It repeats only after a 2xx resets it; retries and backoff are unchanged.
+- **Webhook: waiting for Beeper is one line, not one per interval.** While Beeper's API is unreachable (e.g. container boot), the loop logs `webhook: waiting for Beeper API (<cause, e.g. ECONNREFUSED>)` once, then `webhook: Beeper API reachable` on recovery. Other seed/poll errors (HTTP errors from Beeper, bad cursor) still log every time.
+
 ## [0.10.1] — 2026-11-25 `[PATCH]`
 
 Docs only. No runtime change.
