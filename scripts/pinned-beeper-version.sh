@@ -7,9 +7,10 @@
 # on stdout, nothing else. Exits non-zero with a message on stderr if the file is
 # missing/unreadable, malformed, or either artifact is not published.
 #
-# The pin is the Beeper version for :edge and the PR gate, and the floor/fallback
-# for releases: release.yml uses the newest gated Beeper (promoted-beeper-version.sh)
-# when it is >= the pin. See resolve-beeper-version.sh for the separate "newest
+# The pin is the last-resort floor: floor-beeper-version.sh uses it only when the
+# :previous image's Beeper label can't be read. Releases, :edge and the PR gate
+# build the newest gated Beeper (promoted-beeper-version.sh) at or above that
+# floor. See resolve-beeper-version.sh for the separate "newest
 # stable" lookup behind :next.
 #
 # Needs curl.

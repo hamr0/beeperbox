@@ -99,16 +99,16 @@ jobs:
             echo "::error::Release ref $REF has no beeper-version.txt; refusing to fall back to latest stable Beeper. Add the pin file in a release that includes it."
             exit 1
           fi
-          pinned="$(bash scripts/pinned-beeper-version.sh "$pin")"
+          pinned="$(bash scripts/floor-beeper-version.sh "$IMAGE" "$pin")"
           if [ -z "$pinned" ]; then
-            echo "::error::Pinned Beeper version resolved empty"
+            echo "::error::Floor Beeper version resolved empty"
             exit 1
           fi
           v="$(bash scripts/promoted-beeper-version.sh "$IMAGE" --floor "$pinned")"
           if [ "$v" = "$pinned" ]; then
-            src="pin $pinned; no newer promoted version"
+            src="floor $pinned (:previous Beeper, fallback beeper-version.txt); no newer promoted version"
           else
-            src="promoted: newest that passed gates; pin $pinned"
+            src="promoted: newest that passed gates; floor $pinned (:previous Beeper, fallback beeper-version.txt)"
           fi
           echo "Beeper $v ($src)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -393,17 +393,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Same pin file as the release path (see prepare), read from the checked-out
-      # master tree; passed as a build-arg so the build cache refreshes when the
-      # pin changes.
-      - name: Read pinned Beeper version
+      # Same resolution as the release path (see prepare): the newest promoted
+      # Beeper, floored at :previous's Beeper (fallback beeper-version.txt from the
+      # checked-out master tree); passed as a build-arg so the build cache
+      # refreshes when it changes.
+      - name: Resolve Beeper version (promoted or pinned)
         id: beeper
+        env:
+          IMAGE: ${{ github.repository }}
         run: |
-          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
-          if [ -z "$v" ]; then
-            echo "::error::Pinned Beeper version resolved empty"
+          pinned="$(bash scripts/floor-beeper-version.sh "$IMAGE" beeper-version.txt)"
+          if [ -z "$pinned" ]; then
+            echo "::error::Floor Beeper version resolved empty"
             exit 1
           fi
+          v="$(bash scripts/promoted-beeper-version.sh "$IMAGE" --floor "$pinned")"
+          if [ -z "$v" ]; then
+            echo "::error::Beeper version resolved empty"
+            exit 1
+          fi
+          echo "Beeper $v (floor $pinned = :previous Beeper, fallback beeper-version.txt)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
