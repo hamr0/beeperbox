@@ -1,19 +1,23 @@
 name: beeper-next
 
-# Offers the newest stable Beeper Desktop as a separate image channel, without
-# touching releases. :latest (release.yml) stays on the Beeper pinned in
-# beeper-version.txt; this workflow builds master with the newest stable Beeper,
-# runs the same gates as the release verify legs, and on success publishes
+# Offers the newest stable Beeper Desktop as a separate image channel and
+# promotes it automatically. This workflow builds master with the newest stable
+# Beeper, runs the same gates as the release verify legs, and on success publishes
 #   ghcr.io/<owner>/beeperbox:next
 #   ghcr.io/<owner>/beeperbox:next-beeper-<newest>   (a specific Beeper build)
-# It never touches :latest, :previous, :edge or the version tags. A
-# `beeper-update` issue (assigned to the owner) reports the outcome, once per
-# Beeper version: later runs for the same version comment on it.
+# then dispatches release.yml (job `promote`): release's prepare picks the
+# highest next-beeper-* tag (it passed the gates) as the Beeper for :latest, so
+# no commit, PR or version bump is needed. It never pushes :latest, :previous,
+# :edge or the version tags itself. A `beeper-update` issue (assigned to the
+# owner) reports the outcome, once per Beeper version: later runs for the same
+# version comment on it. If the gates fail, nothing is dispatched and :latest and
+# :previous do not move.
 #
-# To promote a Beeper: change beeper-version.txt to the new version in a PR,
-# merge, and tag a release.
+# beeper-version.txt is the floor/fallback, not the promotion mechanism.
 #
-# Runs only when newest stable != pinned. A plain inequality, not semver order.
+# Runs only when newest stable != the effective version (the greater, by
+# `sort -V`, of the pin and the newest promoted next-beeper-* tag), so a Beeper
+# that is already promoted is not re-gated every week.
 #
 # Triggers: weekly cron (Mon 07 UTC, an hour after release.yml's 06) + manual.
 on:
@@ -32,6 +36,7 @@ jobs:
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
       pinned: ${{ steps.pinned.outputs.version }}
+      effective: ${{ steps.effective.outputs.version }}
       newest: ${{ steps.newest.outputs.version }}
       newer: ${{ steps.cmp.outputs.newer }}
     steps:
@@ -60,6 +65,22 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # Fails the job (and so opens the "check failed" notify issue) if the GHCR
+      # lookup fails; no silent fallback to the pin.
+      - name: Resolve effective Beeper version (newest of pin and promoted)
+        id: effective
+        env:
+          PINNED: ${{ steps.pinned.outputs.version }}
+          IMAGE: ${{ github.repository }}
+        run: |
+          promoted="$(bash scripts/promoted-beeper-version.sh "$IMAGE")"
+          v="$PINNED"
+          if [ -n "$promoted" ] && [ "$(printf '%s\n%s\n' "$PINNED" "$promoted" | sort -V | tail -n1)" = "$promoted" ]; then
+            v="$promoted"
+          fi
+          echo "Effective Beeper $v (pin $PINNED, promoted ${promoted:-none})"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - name: Resolve newest stable Beeper version
         id: newest
         run: |
@@ -73,15 +94,15 @@ jobs:
       - name: Compare
         id: cmp
         env:
-          PINNED: ${{ steps.pinned.outputs.version }}
+          EFFECTIVE: ${{ steps.effective.outputs.version }}
           NEWEST: ${{ steps.newest.outputs.version }}
         run: |
-          if [ "$NEWEST" != "$PINNED" ]; then
+          if [ "$NEWEST" != "$EFFECTIVE" ]; then
             echo "newer=true" >> "$GITHUB_OUTPUT"
-            echo "Newest stable Beeper $NEWEST differs from pinned $PINNED"
+            echo "Newest stable Beeper $NEWEST differs from effective $EFFECTIVE"
           else
             echo "newer=false" >> "$GITHUB_OUTPUT"
-            echo "Pinned Beeper $PINNED is already the newest stable; nothing to do."
+            echo "Effective Beeper $EFFECTIVE is already the newest stable; nothing to do."
           fi
 
   # Gates mirror release.yml's verify / verify-arm64, building master. Nothing
@@ -204,6 +225,26 @@ jobs:
           cache-from: type=gha,scope=next-amd64
           cache-to: type=gha,mode=max,scope=next-amd64
 
+  # Promotion: dispatch release.yml so :latest moves to the Beeper that just
+  # passed the gates. GITHUB_TOKEN-triggered workflow_dispatch does create a run
+  # (GitHub docs: "workflow_dispatch and repository_dispatch events always create
+  # workflow runs"). The dispatched release resolves the newest release tag (its
+  # existing behavior), rebuilds that released code with the promoted Beeper,
+  # re-gates it, and rolls :previous only if something changed.
+  promote:
+    needs: publish-next
+    if: needs.publish-next.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run release.yml --ref master
+
   # Reports the outcome as a `beeper-update` issue assigned to the owner. One
   # issue per Beeper version: if an OPEN one already names this version, the
   # result is added as a comment. If the `check` job itself failed (download
@@ -212,7 +253,7 @@ jobs:
   # commented on, if one is already open). All ${{ }} values arrive through env
   # and are used only as quoted shell variables.
   notify:
-    needs: [check, gate-amd64, gate-arm64, publish-next]
+    needs: [check, gate-amd64, gate-arm64, publish-next, promote]
     if: always() && (needs.check.result == 'failure' || needs.check.outputs.newer == 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -225,23 +266,25 @@ jobs:
           GH_REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           PINNED: ${{ needs.check.outputs.pinned }}
+          EFFECTIVE: ${{ needs.check.outputs.effective }}
           NEWEST: ${{ needs.check.outputs.newest }}
           SHA: ${{ needs.check.outputs.sha }}
           RES_CHECK: ${{ needs.check.result }}
           RES_GATE_AMD64: ${{ needs.gate-amd64.result }}
           RES_GATE_ARM64: ${{ needs.gate-arm64.result }}
           RES_PUBLISH: ${{ needs.publish-next.result }}
+          RES_PROMOTE: ${{ needs.promote.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           if [ "$RES_CHECK" = "failure" ]; then
-            PIN_SHOWN="${PINNED:-unresolved}"
+            PIN_SHOWN="${EFFECTIVE:-${PINNED:-unresolved}}"
             BODY="$(mktemp)"
             cat > "$BODY" <<EOF
           The Beeper version check could not run, so no newer-Beeper result is available.
 
           - Check job result: \`$RES_CHECK\`
-          - Pinned (releases, \`:latest\`): \`$PIN_SHOWN\`
+          - Effective (newest of pin and promoted, \`:latest\`): \`$PIN_SHOWN\`
           - Run: $RUN_URL
 
           \`:next\` was not updated. \`:latest\` is unaffected.
@@ -252,7 +295,7 @@ jobs:
               | jq -r '[.[] | select(.title | startswith("Beeper :next check failed"))][0].number // empty')"
             if [ -z "$EXISTING" ]; then
               gh issue create \
-                --title "Beeper :next check failed (pinned: $PIN_SHOWN)" \
+                --title "Beeper :next check failed (effective: $PIN_SHOWN)" \
                 --body-file "$BODY" \
                 --label beeper-update \
                 --assignee "$OWNER"
@@ -271,7 +314,7 @@ jobs:
             cat <<EOF
           Beeper \`$NEWEST\` $OUTCOME the gates.
 
-          - Pinned (releases, \`:latest\`): \`$PINNED\`
+          - Effective (newest of pin $PINNED and promoted, \`:latest\`): \`$EFFECTIVE\`
           - Newest stable: \`$NEWEST\`
           - Commit tested and published: \`$SHA\`
           - Run: $RUN_URL
@@ -281,12 +324,17 @@ jobs:
           | gate-amd64 | $RES_GATE_AMD64 |
           | gate-arm64 | $RES_GATE_ARM64 |
           | publish-next | $RES_PUBLISH |
+          | promote | $RES_PROMOTE |
 
           EOF
             if [ "$OUTCOME" = "passed" ]; then
               echo "Available as \`:next\` / \`:next-beeper-$NEWEST\`."
               echo ""
-              echo "To promote: change \`beeper-version.txt\` to \`$NEWEST\` in a PR, merge, and tag a release."
+              if [ "$RES_PROMOTE" = "success" ]; then
+                echo "Promotion: a release run was dispatched; \`:latest\` moves to Beeper \`$NEWEST\` once it passes the release gates."
+              else
+                echo "Promotion: dispatching the release run did not succeed ($RES_PROMOTE). Run \`gh workflow run release.yml --ref master\` to promote."
+              fi
             else
               if [ "$RES_GATE_AMD64" != "success" ]; then echo "Failed gate: gate-amd64 ($RES_GATE_AMD64)."; fi
               if [ "$RES_GATE_ARM64" != "success" ]; then echo "Failed gate: gate-arm64 ($RES_GATE_ARM64)."; fi
@@ -294,7 +342,7 @@ jobs:
                 echo "Both gates passed but publish-next did not succeed ($RES_PUBLISH); the push may have been partial."
               fi
               echo ""
-              echo "\`:next\` was not updated. \`:latest\` is unaffected."
+              echo "\`:next\` was not updated. \`:latest\` and \`:previous\` are unaffected."
             fi
           } > "$BODY"
 
@@ -305,7 +353,7 @@ jobs:
             | jq -r --arg v "Beeper $NEWEST " '[.[] | select(.title | contains($v))][0].number // empty')"
           if [ -z "$EXISTING" ]; then
             gh issue create \
-              --title "Beeper $NEWEST $OUTCOME the gates (pinned: $PINNED)" \
+              --title "Beeper $NEWEST $OUTCOME the gates (effective: $EFFECTIVE)" \
               --body-file "$BODY" \
               --label beeper-update \
               --assignee "$OWNER"

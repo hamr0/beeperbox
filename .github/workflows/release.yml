@@ -5,12 +5,14 @@ name: release
 # pulled by the weekly rebuild) can't silently become :latest.
 #
 # Flow for the release path (tag push / weekly cron / manual dispatch):
-#   prepare  -> resolve which ref to build + read its pinned Beeper (beeper-version.txt)
+#   prepare  -> resolve which ref to build + pick its Beeper: the newest one that passed the
+#               gates (next-beeper-* tags) if it is >= the ref's pin (beeper-version.txt), else the pin
 #   verify   -> build amd64, run the MCP + VNC guard checks and the first-paint check (the gate)
 #   verify-arm64 -> build arm64 natively (ubuntu-24.04-arm), run the first-paint check only
 #               (the renderer/GL path is per-arch; the other gates stay amd64-only)
-#   publish  -> roll current :latest to :previous, then build+push multi-arch
-#               semver tags + :latest  (only runs if verify AND verify-arm64 passed)
+#   publish  -> roll current :latest to :previous only if the code or Beeper changed, then
+#               build+push multi-arch semver tags + :latest  (only runs if verify AND
+#               verify-arm64 passed)
 # If either verify job fails, publish is skipped: the previous :latest stays live as the
 # last-known-good image, :previous is untouched, and notify-failure flags it: a step
 # summary on the run, plus a GitHub issue labelled release-gate-failed, assigned to the
@@ -65,16 +67,16 @@ jobs:
             echo "ref=$REF_NAME" >> "$GITHUB_OUTPUT"
           fi
 
-      # The Beeper version is PINNED in beeper-version.txt and read from the
-      # RELEASE ref (the tag being built), not the workflow ref: each tag carries
-      # its own Beeper, so the weekly rebuild of a tag is reproducible and :latest
-      # never jumps to an unvetted Beeper. Newer Beepers are offered separately as
-      # :next (beeper-next.yml) and promoted by changing the pin in a PR. Fails
-      # closed: a ref without the pin file fails prepare (no fall back to latest
-      # stable). The script comes from the workflow ref (latest), like the other
-      # test tooling; the pin file from the release ref, checked out to a side
-      # path (same pattern as .ci-tools in the gate jobs).
-      - name: Checkout pin script (latest workflow ref)
+      # The Beeper version is the newest one that passed the gates (the highest
+      # next-beeper-X.Y.Z tag on GHCR, published by beeper-next.yml only after
+      # both gates pass), provided it version-sorts >= the pin in the RELEASE
+      # ref's beeper-version.txt. The pin is the floor and the fallback when no
+      # promoted version exists. Fails closed: a ref without the pin file fails
+      # prepare, and so does a failed promoted-version lookup (no silent
+      # fallback). Both scripts come from the workflow ref (latest), like the
+      # other test tooling; the pin file from the release ref, checked out to a
+      # side path (same pattern as .ci-tools in the gate jobs).
+      - name: Checkout scripts (latest workflow ref)
         if: steps.ref.outputs.skip != 'true'
         uses: actions/checkout@v6
 
@@ -85,22 +87,31 @@ jobs:
           ref: ${{ steps.ref.outputs.ref }}
           path: .release-ref
 
-      - name: Read pinned Beeper version
+      - name: Resolve Beeper version (promoted or pinned)
         id: beeper
         if: steps.ref.outputs.skip != 'true'
         env:
           REF: ${{ steps.ref.outputs.ref }}
+          IMAGE: ${{ github.repository }}
         run: |
           pin=".release-ref/beeper-version.txt"
           if [ ! -f "$pin" ]; then
             echo "::error::Release ref $REF has no beeper-version.txt; refusing to fall back to latest stable Beeper. Add the pin file in a release that includes it."
             exit 1
           fi
-          v="$(bash scripts/pinned-beeper-version.sh "$pin")"
-          if [ -z "$v" ]; then
+          pinned="$(bash scripts/pinned-beeper-version.sh "$pin")"
+          if [ -z "$pinned" ]; then
             echo "::error::Pinned Beeper version resolved empty"
             exit 1
           fi
+          promoted="$(bash scripts/promoted-beeper-version.sh "$IMAGE")"
+          v="$pinned"
+          src="pinned: no promoted version at or above the pin"
+          if [ -n "$promoted" ] && [ "$(printf '%s\n%s\n' "$pinned" "$promoted" | sort -V | tail -n1)" = "$promoted" ]; then
+            v="$promoted"
+            src="promoted: newest that passed gates; pin $pinned"
+          fi
+          echo "Beeper $v ($src)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
   # The gate: build the candidate image and run the same checks the PRs run.
@@ -219,14 +230,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Roll current :latest -> :previous (known-good fallback)
+      # Commit of the checked-out release ref. metadata-action's default revision
+      # label is github.sha, which on cron/dispatch is master HEAD, not the tag
+      # being built; the override below (and the roll decision) use this instead.
+      - name: Resolve built revision
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Roll only on change: :latest -> :previous when the Beeper version or the
+      # revision differs from what is about to be published. A weekly rebuild of
+      # identical code + Beeper must not overwrite :previous with an identical
+      # image. A missing label (older images) counts as "differs".
+      - name: Roll current :latest -> :previous (only if changed)
+        env:
+          OWNER: ${{ github.repository_owner }}
+          NEW_BEEPER: ${{ needs.prepare.outputs.beeper_version }}
+          NEW_REV: ${{ steps.rev.outputs.sha }}
         run: |
-          IMG=ghcr.io/${{ github.repository_owner }}/beeperbox
-          if docker buildx imagetools inspect "$IMG:latest" >/dev/null 2>&1; then
-            docker buildx imagetools create -t "$IMG:previous" "$IMG:latest"
-            echo "rolled $IMG:latest -> $IMG:previous"
-          else
+          IMG=ghcr.io/$OWNER/beeperbox
+          if ! docker buildx imagetools inspect "$IMG:latest" >/dev/null 2>&1; then
             echo "no existing :latest yet — skipping :previous roll (first publish)"
+            exit 0
+          fi
+          cfg="$(docker buildx imagetools inspect --format '{{json .Image}}' "$IMG:latest")"
+          label() { printf '%s' "$cfg" | jq -r --arg k "$1" '(.["linux/amd64"] // .) | .config.Labels[$k] // ""'; }
+          cur_beeper="$(label io.beeperbox.beeper-version)"
+          cur_rev="$(label org.opencontainers.image.revision)"
+          if [ -n "$cur_beeper" ] && [ -n "$cur_rev" ] && [ "$cur_beeper" = "$NEW_BEEPER" ] && [ "$cur_rev" = "$NEW_REV" ]; then
+            echo "no roll: :latest is already Beeper $cur_beeper @ ${cur_rev:0:12}; :previous unchanged"
+          else
+            docker buildx imagetools create -t "$IMG:previous" "$IMG:latest"
+            echo "rolled $IMG:latest -> $IMG:previous (was Beeper '${cur_beeper:-unlabelled}' @ '${cur_rev:0:12}'; publishing Beeper $NEW_BEEPER @ ${NEW_REV:0:12})"
           fi
 
       - name: Compute image tags
@@ -239,6 +273,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.ref }}
             type=semver,pattern={{major}},value=${{ needs.prepare.outputs.ref }}
             type=raw,value=latest
+          labels: |
+            io.beeperbox.beeper-version=${{ needs.prepare.outputs.beeper_version }}
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

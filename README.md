@@ -42,7 +42,21 @@ echo "BEEPER_TOKEN=abc123..." > .env
 docker compose up -d
 ```
 
-The image is `ghcr.io/hamr0/beeperbox:latest`, built for amd64 and arm64. Pin a version with `BEEPERBOX_IMAGE_TAG=0.10.0`. `:edge` tracks master and may break. `:next` is master built with the newest stable Beeper Desktop, published once it passes the release gates. Your login is kept in a named volume, and `docker restart` recovers cleanly.
+The image is `ghcr.io/hamr0/beeperbox:latest`, built for amd64 and arm64. Pin a version with `BEEPERBOX_IMAGE_TAG=0.10.0`. `:edge` tracks master and may break. `:next` is master built with the newest stable Beeper Desktop, published once it passes the release gates. `:latest` uses the newest stable Beeper that passed those gates, promoted automatically every week; if a new Beeper fails them, `:latest` stays where it is. `:previous` is the prior `:latest`. Your login is kept in a named volume, and `docker restart` recovers cleanly.
+
+> `:previous` rolls back beeperbox, not Beeper's data. Once a newer Beeper has opened your volume, it upgrades the database and an older Beeper can't open it again. To keep a guaranteed way back, back up the volume before pulling a new `:latest`:
+
+```sh
+docker compose stop
+docker run --rm -v beeperbox_beeperbox_config:/data -v "$PWD":/backup alpine tar czf /backup/beeperbox-config-$(date +%F).tar.gz -C /data .
+docker compose start
+```
+
+The volume name is `<compose project>_beeperbox_config`; check it with `docker volume ls`. To restore, stop the container, empty the volume (or use a fresh one), and run:
+
+```sh
+docker run --rm -v beeperbox_beeperbox_config:/data -v "$PWD":/backup alpine tar xzf /backup/beeperbox-config-YYYY-MM-DD.tar.gz -C /data
+```
 
 | Host port | Purpose | Override |
 |---|---|---|

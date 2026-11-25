@@ -12,6 +12,14 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the Beeper version pinned in `beeper-version.txt`), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; promote it by bumping the pin), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
+## [Unreleased]
+
+### Changed
+
+- **`:latest` now follows the newest Beeper Desktop that passed the gates, automatically.** `beeper-next.yml` dispatches `release.yml` after it publishes a gated `:next-beeper-<ver>`; the release's `prepare` picks the highest such tag (new `scripts/promoted-beeper-version.sh`) when it is >= `beeper-version.txt`, which is now the floor/fallback. A failed lookup fails the release rather than falling back silently. If a new Beeper fails the gates, `:latest` and `:previous` do not move. `beeper-next` also compares against the effective version (pin or promoted, whichever is newer), so an already-promoted Beeper is not re-gated every week.
+- **`:previous` rolls only on change.** Images now carry `io.beeperbox.beeper-version` and an explicit `org.opencontainers.image.revision` (the release ref's commit); `:latest` is rolled to `:previous` only if either differs from what is being published. Previously the weekly cron overwrote `:previous` with an image identical to `:latest`.
+- Caveat, documented in the README: `:previous` rolls back beeperbox, not Beeper's data. A newer Beeper upgrades the volume's database and an older one can't open it again, so back up the volume before pulling a new `:latest`.
+
 ## [0.10.1] — 2026-11-25 `[PATCH]`
 
 Docs only. No runtime change.
