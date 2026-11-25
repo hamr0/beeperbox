@@ -7,9 +7,10 @@
 # on stdout, nothing else. Exits non-zero with a message on stderr if the file is
 # missing/unreadable, malformed, or either artifact is not published.
 #
-# The pin is the single source of the Beeper version for everything that ships
-# or is tested as shipping (releases, :edge, the PR gate). See
-# resolve-beeper-version.sh for the separate "newest stable" lookup behind :next.
+# The pin is the Beeper version for :edge and the PR gate, and the floor/fallback
+# for releases: release.yml uses the newest gated Beeper (promoted-beeper-version.sh)
+# when it is >= the pin. See resolve-beeper-version.sh for the separate "newest
+# stable" lookup behind :next.
 #
 # Needs curl.
 set -euo pipefail
