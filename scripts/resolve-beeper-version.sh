@@ -16,7 +16,8 @@
 # version both exist (HTTP 200) so a half-published release can't be pinned.
 #
 # Used by beeper-next.yml (finds the newest stable to offer as :next). Releases,
-# :edge and PRs use the pinned beeper-version.txt instead (pinned-beeper-version.sh).
+# :edge and PRs use the promoted version, floored at :previous's Beeper,
+# fallback beeper-version.txt (promoted-, floor-, pinned-beeper-version.sh).
 # The artifact check is shared via beeper-artifacts-lib.sh. Needs curl.
 set -euo pipefail
 

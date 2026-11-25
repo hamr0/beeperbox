@@ -7,7 +7,8 @@ name: mcp-test
 # publish gate, so the PR test and the release gate can't drift. It also runs
 # the shared scripts/first-paint-check.sh (fresh profile -> Beeper's login
 # window actually renders), the same script release.yml uses. The image is built
-# with the Beeper version pinned in beeper-version.txt, the same pin releases use.
+# with the same Beeper version releases use: the newest promoted one, with
+# the :previous image's Beeper as the floor (fallback beeper-version.txt).
 #
 # Triggers: workflow_dispatch (on demand) + pull_request on the files that
 # affect the built image or the check itself.
@@ -26,6 +27,8 @@ on:
       - 'scripts/rfb.py'
       - 'beeper-version.txt'
       - 'scripts/pinned-beeper-version.sh'
+      - 'scripts/promoted-beeper-version.sh'
+      - 'scripts/floor-beeper-version.sh'
       - 'scripts/beeper-artifacts-lib.sh'
       - '.github/workflows/mcp-test.yml'
 
@@ -57,16 +60,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Same pin as releases and :edge: build exactly the Beeper in
-      # beeper-version.txt, so the PR gate tests what ships.
-      - name: Read pinned Beeper version
+      # Same resolution as releases and :edge: the newest promoted Beeper (a
+      # next-beeper-* GHCR tag), floored at :previous's Beeper (fallback
+      # beeper-version.txt), so the PR gate tests what ships.
+      - name: Resolve Beeper version (promoted or pinned)
         id: beeper
+        env:
+          IMAGE: ${{ github.repository }}
         run: |
-          v="$(bash scripts/pinned-beeper-version.sh beeper-version.txt)"
-          if [ -z "$v" ]; then
-            echo "::error::Pinned Beeper version resolved empty"
+          pinned="$(bash scripts/floor-beeper-version.sh "$IMAGE" beeper-version.txt)"
+          if [ -z "$pinned" ]; then
+            echo "::error::Floor Beeper version resolved empty"
             exit 1
           fi
+          v="$(bash scripts/promoted-beeper-version.sh "$IMAGE" --floor "$pinned")"
+          if [ -z "$v" ]; then
+            echo "::error::Beeper version resolved empty"
+            exit 1
+          fi
+          echo "Beeper $v (floor $pinned = :previous Beeper, fallback beeper-version.txt)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx

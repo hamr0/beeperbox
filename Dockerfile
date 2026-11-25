@@ -58,7 +58,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # on any build platform.
 ARG TARGETARCH
 # Beeper Desktop download. CI always passes BEEPER_VERSION: releases, :edge and
-# the PR gate use the version pinned in beeper-version.txt, and the :next channel
+# the PR gate use the newest promoted Beeper (floor: :previous's Beeper, fallback
+# beeper-version.txt), and the :next channel
 # (beeper-next.yml) uses the newest stable. Pinning per run means every job in a
 # run builds the same Beeper and the build cache refreshes when it changes (this
 # RUN's text is otherwise constant, so a cached layer would keep a stale
