@@ -914,6 +914,18 @@ test('webhook retry: 500 then 200 reuses the same webhook-id, holds the cursor, 
   assert.ok(h.saves[0].pending);
 });
 
+test('webhook: two separate batches carry different webhook-ids', async () => {
+  const h = whHarness({ polls: [
+    { cursor: 'C1', messages: [wm('a', 'c1', 't')] },
+    { cursor: 'C2', messages: [wm('b', 'c1', 't')] },
+  ] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 2);
+  assert.notEqual(h.posts[0].id, h.posts[1].id);
+});
+
 test('webhook backoff is capped at 300000ms', async () => {
   const h = whHarness({ statuses: [500] });
   const st = { cursor: 'C0', pending: { id: 'msg_x', body: '{}', next_cursor: 'C1' }, failures: 30 };
@@ -1088,9 +1100,9 @@ const FRESH = { cursor: null, pending: null, failures: 0 };
 
 test('webhook state: save -> load round-trips cursor and pending; mode 0600', () => {
   const d = whTmp(); const f = path.join(d, 'sub', 'ws.json'); const logs = [];
-  const st = { cursor: 'C9', pending: { id: 'msg_1', body: '{"a":1}', next_cursor: 'C10' }, failures: 3 };
+  const st = { cursor: S.encodeCursor({ ts: 't', ids: [] }), pending: { id: 'msg_1', body: '{"a":1}', next_cursor: S.encodeCursor({ ts: 't2', ids: ['x'] }) }, failures: 3 };
   S.saveWebhookState(f, st, (m) => logs.push(m));
-  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: 'C9', pending: st.pending, failures: 0 });
+  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: st.cursor, pending: st.pending, failures: 0 });
   assert.equal(fs.statSync(f).mode & 0o777, 0o600);
   assert.deepEqual(logs, []);
 });
@@ -1233,4 +1245,137 @@ test('webhook state: unreadable (EACCES) file with a pending batch -> WARN, move
   fs.chmodSync(mp, 0o600);
   assert.equal(fs.readFileSync(mp, 'utf8'), content);
   assert.ok(logs.some((l) => /unreadable/.test(l) && /EACCES/.test(l) && /unreadable-/.test(l)), logs.join('|'));
+});
+
+// ── v0.10.2 webhook log/robustness fixes ──
+test('webhook state: a garbage cursor string -> WARN, moved to .corrupt-*, fresh (would otherwise loop "malformed cursor" forever)', () => {
+  const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+  const content = '{"cursor":"garbage!","pending":null}';
+  fs.writeFileSync(f, content);
+  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), FRESH);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /corrupt/);
+  assert.match(logs[0], /cursor is malformed/);
+  const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.corrupt-'));
+  assert.equal(moved.length, 1);
+  assert.equal(fs.readFileSync(path.join(d, moved[0]), 'utf8'), content);
+});
+
+test('webhook state: a garbage pending.next_cursor -> WARN, moved to .corrupt-*, fresh (would otherwise loop "malformed cursor" after the next 2xx)', () => {
+  const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+  const content = JSON.stringify({ cursor: S.encodeCursor({ ts: 't', ids: [] }), pending: { id: 'msg_1', body: '{}', next_cursor: 'garbage!' } });
+  fs.writeFileSync(f, content);
+  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), FRESH);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /pending is malformed/);
+  const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.corrupt-'));
+  assert.equal(moved.length, 1);
+  assert.equal(fs.readFileSync(path.join(d, moved[0]), 'utf8'), content);
+});
+
+test('webhook state: legitimate pending.next_cursor values (real and empty-ts seed cursors) are still accepted', () => {
+  for (const next_cursor of [S.encodeCursor({ ts: '', ids: [] }), S.encodeCursor({ ts: '2026-01-01T00:00:00.000Z', ids: ['a', 'b'] })]) {
+    const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+    const pending = { id: 'msg_1', body: '{}', next_cursor };
+    fs.writeFileSync(f, JSON.stringify({ cursor: null, pending }));
+    assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: null, pending, failures: 0 });
+    assert.deepEqual(logs, []);
+  }
+});
+
+test('webhook state: an empty-string cursor and a real lazy-seed (empty-ts) cursor are still accepted', () => {
+  for (const cursor of ['', S.encodeCursor({ ts: '', ids: [] }), S.encodeCursor({ ts: '2026-01-01T00:00:00.000Z', ids: ['a'] })]) {
+    const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+    fs.writeFileSync(f, JSON.stringify({ cursor, pending: null }));
+    assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor, pending: null, failures: 0 });
+    assert.deepEqual(logs, []);
+    assert.equal(fs.readdirSync(d).length, 1);
+  }
+});
+
+const AUTHWARN = /BEEPERBOX_WEBHOOK_SECRET/;
+const pend = () => ({ id: 'msg_x', body: '{}', next_cursor: 'C1' });
+
+test('webhook auth: 3 consecutive 401s warn exactly once; 4th/5th stay quiet; per-attempt line kept; backoff and pending unchanged', async () => {
+  const h = whHarness({ statuses: [401, 401, 401, 401, 401] });
+  const st = { cursor: 'C0', pending: pend(), failures: 0 };
+  const delays = [];
+  for (let i = 0; i < 2; i++) delays.push(await S.webhookTick(st, h.deps));
+  assert.equal(h.logs.filter((l) => AUTHWARN.test(l)).length, 0);
+  delays.push(await S.webhookTick(st, h.deps));
+  const w = h.logs.filter((l) => AUTHWARN.test(l));
+  assert.equal(w.length, 1);
+  assert.equal(w[0], 'https://hooks.example.com rejected 3 deliveries in a row (HTTP 401) — check BEEPERBOX_WEBHOOK_SECRET and BEEPERBOX_WEBHOOK_URL; still retrying');
+  assert.match(w[0], /BEEPERBOX_WEBHOOK_URL/);
+  for (let i = 0; i < 2; i++) delays.push(await S.webhookTick(st, h.deps));
+  assert.equal(h.logs.filter((l) => AUTHWARN.test(l)).length, 1);
+  assert.equal(h.logs.filter((l) => /failed: HTTP 401/.test(l)).length, 5);
+  assert.deepEqual(delays, [2000, 4000, 8000, 16000, 32000]);
+  assert.deepEqual(st.pending, pend());
+  assert.equal(st.cursor, 'C0');
+  assert.ok(h.posts.every((p) => p.id === 'msg_x'));
+});
+
+test('webhook auth: a 200 resets counter and latch, so three more 401s warn again', async () => {
+  const h = whHarness({ statuses: [401, 401, 401, 200] });
+  const st = { cursor: 'C0', pending: pend(), failures: 0 };
+  for (let i = 0; i < 4; i++) await S.webhookTick(st, h.deps);
+  assert.equal(h.logs.filter((l) => AUTHWARN.test(l)).length, 1);
+  assert.equal(st.pending, null);
+  h.polls.push({ cursor: 'C2', messages: [wm('a', 'c1', 't')] });
+  h.statuses.push(403, 403, 403);
+  for (let i = 0; i < 4; i++) await S.webhookTick(st, h.deps);
+  const w = h.logs.filter((l) => AUTHWARN.test(l));
+  assert.equal(w.length, 2);
+  assert.match(w[1], /HTTP 403/);
+});
+
+test('webhook auth: 500 x3 and a network error do not warn, and break an auth streak', async () => {
+  const h = whHarness({ statuses: [500, 500, 500] });
+  const st = { cursor: 'C0', pending: pend(), failures: 0 };
+  for (let i = 0; i < 3; i++) await S.webhookTick(st, h.deps);
+  assert.equal(h.logs.filter((l) => AUTHWARN.test(l)).length, 0);
+  const h2 = whHarness({ statuses: [401, 401, new Error('ECONNREFUSED'), 401, 401] });
+  const st2 = { cursor: 'C0', pending: pend(), failures: 0 };
+  for (let i = 0; i < 5; i++) await S.webhookTick(st2, h2.deps);
+  assert.equal(h2.logs.filter((l) => AUTHWARN.test(l)).length, 0);
+});
+
+const netErr = (code) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ' + code), { code }) });
+
+test('webhook waiting: 3 seed network failures log once with the cause; success -> one "reachable"; failing again logs again', async () => {
+  const h = whHarness({ polls: [netErr('ECONNREFUSED'), netErr('ECONNREFUSED'), netErr('ECONNREFUSED'), { cursor: 'C0', messages: [] }, netErr('ECONNREFUSED')] });
+  const st = { cursor: null, pending: null, failures: 0 };
+  for (let i = 0; i < 3; i++) assert.equal(await S.webhookTick(st, h.deps), 1000);
+  assert.deepEqual(h.logs, ['waiting for Beeper API (ECONNREFUSED)']);
+  await S.webhookTick(st, h.deps);
+  assert.equal(st.cursor, 'C0');
+  assert.deepEqual(h.logs.slice(1), ['Beeper API reachable']);
+  st.cursor = null;
+  await S.webhookTick(st, h.deps);
+  assert.deepEqual(h.logs.slice(2), ['waiting for Beeper API (ECONNREFUSED)']);
+});
+
+test('webhook waiting: same for poll failures', async () => {
+  const h = whHarness({ polls: [netErr('ECONNREFUSED'), netErr('ECONNREFUSED'), netErr('ECONNREFUSED'), { cursor: 'C0', messages: [] }, netErr('ECONNRESET')] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  for (let i = 0; i < 3; i++) assert.equal(await S.webhookTick(st, h.deps), 1000);
+  assert.deepEqual(h.logs, ['waiting for Beeper API (ECONNREFUSED)']);
+  await S.webhookTick(st, h.deps);
+  assert.deepEqual(h.logs.slice(1), ['Beeper API reachable']);
+  await S.webhookTick(st, h.deps);
+  assert.deepEqual(h.logs.slice(2), ['waiting for Beeper API (ECONNRESET)']);
+});
+
+test('webhook waiting: non-network errors (HTTP status, malformed cursor) keep logging every time, never latch', async () => {
+  const bad = () => Object.assign(new Error('poll_messages: malformed cursor'), { rpcCode: -32602 });
+  const http = () => Object.assign(new Error('beeper api 503: x'), { rpcCode: -32001 });
+  const h = whHarness({ polls: [bad(), bad(), http(), http()] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  for (let i = 0; i < 2; i++) await S.webhookTick(st, h.deps);
+  st.cursor = null;
+  for (let i = 0; i < 2; i++) await S.webhookTick(st, h.deps);
+  assert.equal(h.logs.filter((l) => /poll failed: poll_messages: malformed cursor/.test(l)).length, 2);
+  assert.equal(h.logs.filter((l) => /seed failed: beeper api 503/.test(l)).length, 2);
+  assert.ok(h.logs.every((l) => !/waiting for Beeper|reachable/.test(l)));
 });
