@@ -12,7 +12,9 @@ beeperbox follows [Semantic Versioning 2.0.0](https://semver.org/) with one conc
 
 Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a minor), `:X` (rolling within a major — always `:0` today), `:latest` (newest release tag, rebuilt weekly on the newest Beeper that passed the gates, never below the `beeper-version.txt` floor), `:previous` (the prior `:latest`, moved only when the code or Beeper changes), `:next` (master with the newest stable Beeper Desktop that passed the gates, updated weekly; a passing `:next` promotes its Beeper to `:latest` automatically), `:next-beeper-X.Y.Z` (a specific Beeper build of `:next`), `:edge` (every push to `master`, may break).
 
-## [Unreleased]
+## [0.10.2] — 2026-11-25 `[PATCH]`
+
+Release-workflow and webhook-diagnostics fixes: `:latest` follows the newest gated Beeper, `:previous` rolls only on change, and the webhook recovers from a garbage cursor and logs auth and unreachable-Beeper problems once. No new MCP tool or schema field.
 
 ### Changed
 
@@ -24,7 +26,6 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 ### Fixed
 
 - **Webhook: a garbage `pending.next_cursor` is caught at load too.** It was accepted, and after the next successful POST it became the live cursor and looped "malformed cursor" until a restart. It is now treated as a malformed state file (moved aside, reseeded), like a garbage `cursor`.
-
 - **Webhook: a garbage `cursor` in `webhook-state.json` no longer loops forever.** A hand-edited or damaged state file with a non-decodable cursor loaded as valid, then every tick logged `poll failed: malformed cursor` and never reseeded. It is now treated like any other corrupt state file: moved aside to `webhook-state.json.corrupt-<ms>`, warned, and reseeded.
 - **Webhook: repeated 401/403 now point at the secret.** After 3 consecutive auth rejections, one line is logged: `webhook: <host> rejected 3 deliveries in a row (HTTP <status>) — check BEEPERBOX_WEBHOOK_SECRET and BEEPERBOX_WEBHOOK_URL; still retrying`. It repeats only after a 2xx resets it; retries and backoff are unchanged.
 - **Webhook: waiting for Beeper is one line, not one per interval.** While Beeper's API is unreachable (e.g. container boot), the loop logs `webhook: waiting for Beeper API (<cause, e.g. ECONNREFUSED>)` once, then `webhook: Beeper API reachable` on recovery. Other seed/poll errors (HTTP errors from Beeper, bad cursor) still log every time.
