@@ -16,11 +16,15 @@ Published tags on GHCR: `:X.Y.Z` (exact, immutable), `:X.Y` (rolling within a mi
 
 ### Changed
 
+- **`BEEPER_VERSION_OVERRIDE` repository variable.** When set, `release.yml` `prepare` uses that exact Beeper (validated as `X.Y.Z` with both AppImages present) instead of the promoted/pinned one, so a promoted Beeper that fails the gates on released code can no longer block every release. Unset it with `gh variable delete BEEPER_VERSION_OVERRIDE`. `beeper-next.yml` does not use it.
 - **`:latest` now follows the newest Beeper Desktop that passed the gates, automatically.** `beeper-next.yml` dispatches `release.yml` after it publishes a gated `:next-beeper-<ver>`; the release's `prepare` picks the highest such tag (new `scripts/promoted-beeper-version.sh`) when it is >= `beeper-version.txt`, which is now the floor/fallback. A failed lookup fails the release rather than falling back silently. If a new Beeper fails the gates, `:latest` and `:previous` do not move. `beeper-next` also compares against the effective version (pin or promoted, whichever is newer), so an already-promoted Beeper is not re-gated every week.
 - **`:previous` rolls only on change.** Images now carry `io.beeperbox.beeper-version` and an explicit `org.opencontainers.image.revision` (the release ref's commit); `:latest` is rolled to `:previous` only if either differs from what is being published. Previously the weekly cron overwrote `:previous` with an image identical to `:latest`.
 - Caveat, documented in the README: `:previous` rolls back beeperbox, not Beeper's data. A newer Beeper upgrades the volume's database and an older one can't open it again, so back up the volume before pulling a new `:latest`.
+- **`beeper-next` acts only on a strictly newer Beeper.** It compared with `!=`, so if Beeper pulled a release (newest stable below the promoted one) it re-gated, republished `:next` with the older Beeper and dispatched a release every week. Now a lower or equal newest stable is a no-op.
 
 ### Fixed
+
+- **Webhook: a garbage `pending.next_cursor` is caught at load too.** It was accepted, and after the next successful POST it became the live cursor and looped "malformed cursor" until a restart. It is now treated as a malformed state file (moved aside, reseeded), like a garbage `cursor`.
 
 - **Webhook: a garbage `cursor` in `webhook-state.json` no longer loops forever.** A hand-edited or damaged state file with a non-decodable cursor loaded as valid, then every tick logged `poll failed: malformed cursor` and never reseeded. It is now treated like any other corrupt state file: moved aside to `webhook-state.json.corrupt-<ms>`, warned, and reseeded.
 - **Webhook: repeated 401/403 now point at the secret.** After 3 consecutive auth rejections, one line is logged: `webhook: <host> rejected 3 deliveries in a row (HTTP <status>) — check BEEPERBOX_WEBHOOK_SECRET and BEEPERBOX_WEBHOOK_URL; still retrying`. It repeats only after a 2xx resets it; retries and backoff are unchanged.

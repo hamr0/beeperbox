@@ -47,15 +47,17 @@ The image is `ghcr.io/hamr0/beeperbox:latest`, built for amd64 and arm64. Pin a 
 > `:previous` rolls back beeperbox, not Beeper's data. Once a newer Beeper has opened your volume, it upgrades the database and an older Beeper can't open it again. To keep a guaranteed way back, back up the volume before pulling a new `:latest`:
 
 ```sh
+mkdir -p ~/beeperbox-backups
 docker compose stop
-docker run --rm -v beeperbox_beeperbox_config:/data -v "$PWD":/backup alpine tar czf /backup/beeperbox-config-$(date +%F).tar.gz -C /data .
+docker run --rm -v beeperbox_beeperbox_config:/data -v ~/beeperbox-backups:/backup:Z alpine tar czf /backup/beeperbox-config-$(date +%F).tar.gz -C /data .
+ls -l ~/beeperbox-backups
 docker compose start
 ```
 
-The volume name is `<compose project>_beeperbox_config`; check it with `docker volume ls`. To restore, stop the container, empty the volume (or use a fresh one), and run:
+The volume name is `<compose project>_beeperbox_config`; check it with `docker volume ls`. `:Z` lets the container write on SELinux hosts (Fedora, RHEL) by relabelling the folder for container use, so keep backups in a folder of their own, never your home folder itself. To restore, stop the container, empty the volume (or use a fresh one), and run:
 
 ```sh
-docker run --rm -v beeperbox_beeperbox_config:/data -v "$PWD":/backup alpine tar xzf /backup/beeperbox-config-YYYY-MM-DD.tar.gz -C /data
+docker run --rm -v beeperbox_beeperbox_config:/data -v ~/beeperbox-backups:/backup:Z alpine tar xzf /backup/beeperbox-config-YYYY-MM-DD.tar.gz -C /data
 ```
 
 | Host port | Purpose | Override |

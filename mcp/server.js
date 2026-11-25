@@ -1602,7 +1602,7 @@ function loadWebhookState(file, log) {
     if (!j || typeof j !== 'object' || Array.isArray(j)) reason = 'not a JSON object';
     else if (!(j.cursor === null || typeof j.cursor === 'string')) reason = 'cursor is not a string or null';
     else if (j.cursor && !cursorDecodes(j.cursor)) reason = 'cursor is malformed';
-    else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string'))) reason = 'pending is malformed';
+    else if (!(p === null || (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.body === 'string' && typeof p.next_cursor === 'string' && cursorDecodes(p.next_cursor)))) reason = 'pending is malformed';
   }
   if (!reason) return { cursor: j.cursor, pending: j.pending, failures: 0 };
   const moved = moveAside(file, 'corrupt');

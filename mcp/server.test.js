@@ -1100,7 +1100,7 @@ const FRESH = { cursor: null, pending: null, failures: 0 };
 
 test('webhook state: save -> load round-trips cursor and pending; mode 0600', () => {
   const d = whTmp(); const f = path.join(d, 'sub', 'ws.json'); const logs = [];
-  const st = { cursor: S.encodeCursor({ ts: 't', ids: [] }), pending: { id: 'msg_1', body: '{"a":1}', next_cursor: 'C10' }, failures: 3 };
+  const st = { cursor: S.encodeCursor({ ts: 't', ids: [] }), pending: { id: 'msg_1', body: '{"a":1}', next_cursor: S.encodeCursor({ ts: 't2', ids: ['x'] }) }, failures: 3 };
   S.saveWebhookState(f, st, (m) => logs.push(m));
   assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: st.cursor, pending: st.pending, failures: 0 });
   assert.equal(fs.statSync(f).mode & 0o777, 0o600);
@@ -1259,6 +1259,28 @@ test('webhook state: a garbage cursor string -> WARN, moved to .corrupt-*, fresh
   const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.corrupt-'));
   assert.equal(moved.length, 1);
   assert.equal(fs.readFileSync(path.join(d, moved[0]), 'utf8'), content);
+});
+
+test('webhook state: a garbage pending.next_cursor -> WARN, moved to .corrupt-*, fresh (would otherwise loop "malformed cursor" after the next 2xx)', () => {
+  const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+  const content = JSON.stringify({ cursor: S.encodeCursor({ ts: 't', ids: [] }), pending: { id: 'msg_1', body: '{}', next_cursor: 'garbage!' } });
+  fs.writeFileSync(f, content);
+  assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), FRESH);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /pending is malformed/);
+  const moved = fs.readdirSync(d).filter((n) => n.startsWith('ws.json.corrupt-'));
+  assert.equal(moved.length, 1);
+  assert.equal(fs.readFileSync(path.join(d, moved[0]), 'utf8'), content);
+});
+
+test('webhook state: legitimate pending.next_cursor values (real and empty-ts seed cursors) are still accepted', () => {
+  for (const next_cursor of [S.encodeCursor({ ts: '', ids: [] }), S.encodeCursor({ ts: '2026-01-01T00:00:00.000Z', ids: ['a', 'b'] })]) {
+    const d = whTmp(); const f = path.join(d, 'ws.json'); const logs = [];
+    const pending = { id: 'msg_1', body: '{}', next_cursor };
+    fs.writeFileSync(f, JSON.stringify({ cursor: null, pending }));
+    assert.deepEqual(S.loadWebhookState(f, (m) => logs.push(m)), { cursor: null, pending, failures: 0 });
+    assert.deepEqual(logs, []);
+  }
 });
 
 test('webhook state: an empty-string cursor and a real lazy-seed (empty-ts) cursor are still accepted', () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# promoted-beeper-version.sh [owner/image]
+# promoted-beeper-version.sh [owner/image] [--floor X.Y.Z]
 #
 # Prints the newest Beeper Desktop version that has passed the gates: the
 # highest X.Y.Z among the GHCR tags named next-beeper-X.Y.Z (beeper-next.yml
@@ -7,6 +7,10 @@
 # there are no such tags. Exits non-zero with a message on stderr on any
 # network or parse failure (never prints nothing on a failure). The version is
 # then validated with beeper_check_artifacts, like pinned-beeper-version.sh.
+#
+# With --floor X.Y.Z, prints the greater (by sort -V) of the floor and the newest
+# promoted version, or the floor alone when none is promoted. A malformed floor
+# exits 2. Without it, behaviour is as above.
 #
 # owner/image comes from the first argument, else $BEEPERBOX_IMAGE, else
 # hamr0/beeperbox. $PROMOTED_TAGS_JSON (a saved tags/list response) replaces the
@@ -18,7 +22,23 @@ set -euo pipefail
 # shellcheck source=scripts/beeper-artifacts-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/beeper-artifacts-lib.sh"
 
-repo="${1:-${BEEPERBOX_IMAGE:-hamr0/beeperbox}}"
+have_floor=0
+floor=""
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --floor)
+      if [ $# -lt 2 ]; then echo "promoted-beeper-version: --floor needs a version" >&2; exit 2; fi
+      have_floor=1; floor="$2"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+if [ "$have_floor" = 1 ] && [[ ! "$floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "promoted-beeper-version: bad --floor '$floor' (expected X.Y.Z)" >&2
+  exit 2
+fi
+
+repo="${args[0]:-${BEEPERBOX_IMAGE:-hamr0/beeperbox}}"
 if [[ ! "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$ ]]; then
   echo "promoted-beeper-version: bad image '$repo' (expected owner/image)" >&2
   exit 2
@@ -50,9 +70,13 @@ version="$(printf '%s\n' "$tags" | { grep -E '^next-beeper-[0-9]+\.[0-9]+\.[0-9]
   | sed 's/^next-beeper-//' | sort -V | tail -n1)"
 
 if [ -z "$version" ]; then
+  if [ "$have_floor" = 1 ]; then echo "$floor"; fi
   exit 0
 fi
 
 beeper_check_artifacts "$version" promoted-beeper-version || exit 1
 
+if [ "$have_floor" = 1 ]; then
+  version="$(printf '%s\n%s\n' "$floor" "$version" | sort -V | tail -n1)"
+fi
 echo "$version"
