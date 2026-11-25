@@ -20,155 +20,99 @@ WhatsApp, iMessage, Signal, Telegram, Discord, Slack, Messenger, Instagram, Link
 
 ## Two ways to run
 
-Same MCP server, same 12 tools, same `serverInfo.version` — by construction, because both modes run the [same single file](mcp/server.js). Pick by where Beeper lives:
+Both modes run the [same single file](mcp/server.js), so they have the same 12 tools and the same `serverInfo.version`. Pick by where Beeper lives:
 
 | | **Container** | **Lite** (`npx`) |
 |---|---|---|
-| Beeper Desktop | bundled, headless, in Docker | **you** supply it (already open on your machine) |
-| Needs | Docker + compose | just Node 18+ |
-| Start | `docker compose up -d` | `npx beeperbox` |
-| Best for | always-on, VPS, headless | laptop users with Beeper already running |
-| First-run login | noVNC at `:6080` | already done in your local Beeper |
+| Beeper Desktop | bundled, headless, in Docker | yours, already open on this machine |
+| Needs | Docker + compose, ~1 GB disk, ~600 MB RAM | Node 18+ |
+| Best for | always-on, VPS, headless | a laptop already running Beeper |
+| First login | once, in noVNC at `:6080` | already done in your Beeper |
+| Restart on crash | Docker restart policy | yours (`systemd` / `pm2`) |
 
-The container is the full appliance (headless Beeper + raw API + MCP). Lite mode is **just the MCP verb layer** pointed at a Beeper you already run — no Docker, no Electron, no Xvfb. New in [v0.8.0](CHANGELOG.md).
+Both need a Beeper access token: **Settings → Developers** → enable the API → create a token.
 
-## Quick start (container)
-
-Prereqs: Docker + compose plugin, ~1 GB disk, ~600 MB RAM, a Beeper account.
-
-**1. Pull and run**
+### Container
 
 ```sh
 curl -LO https://raw.githubusercontent.com/hamr0/beeperbox/master/docker-compose.yml
 docker compose up -d
-```
-
-Pulls the pre-built multi-arch image (`ghcr.io/hamr0/beeperbox:latest`, `linux/amd64` + `linux/arm64`). No clone, no build. Pin a version with `BEEPERBOX_IMAGE_TAG=0.8.0 docker compose up -d`, or track master with `:edge` (may break). `:next` is master built with the newest stable Beeper Desktop once it passes the release gates, a preview ahead of the Beeper that `:latest` pins.
-
-**2. Log in once**
-
-Open `http://localhost:6080/vnc.html`, sign into Beeper, then **Settings → Developers** → enable the API and create an access token. Save it:
-
-```sh
+# open http://localhost:6080/vnc.html, sign in to Beeper, create the token, then:
 echo "BEEPER_TOKEN=abc123..." > .env
 docker compose up -d
 ```
 
-Login and bridge state persist in a named volume — you won't log in again after restarts, and `docker restart` recovers cleanly (the entrypoint clears the stale display lock that used to wedge a restarted container).
+The image is `ghcr.io/hamr0/beeperbox:latest`, built for amd64 and arm64. Pin a version with `BEEPERBOX_IMAGE_TAG=0.10.0`. `:edge` tracks master and may break. `:next` is master built with the newest stable Beeper Desktop, published once it passes the release gates. Your login is kept in a named volume, and `docker restart` recovers cleanly.
 
-**3. Talk to it**
-
-```sh
-# Raw Beeper Desktop API
-curl -H "Authorization: Bearer $BEEPER_TOKEN" http://localhost:23373/v1/info
-
-# MCP server (HTTP transport)
-curl -X POST http://localhost:23375 \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-For stdio MCP, point any MCP client at `docker exec -i beeperbox node /opt/mcp/server.js --stdio`. Works with Claude Code, Cursor, Cline, Continue, [bareagent](https://github.com/hamr0/bareagent), or anything that speaks Model Context Protocol.
-
-Done.
-
-## Ports
-
-| Host | Purpose | Bound to |
+| Host port | Purpose | Override |
 |---|---|---|
-| `6080` | noVNC web UI — first-run login only | `127.0.0.1` |
-| `23373` | Raw Beeper Desktop HTTP API | `127.0.0.1` |
-| `23375` | Opinionated 12-tool MCP server | `127.0.0.1` |
+| `6080` | noVNC, first login only | `BEEPERBOX_NOVNC_PORT` |
+| `23373` | raw Beeper Desktop API | `BEEPERBOX_HOST_PORT` |
+| `23375` | MCP server | `BEEPERBOX_MCP_PORT` |
 
-All three are env-overridable (`BEEPERBOX_NOVNC_PORT`, `BEEPERBOX_HOST_PORT`, `BEEPERBOX_MCP_PORT`) so you can run multiple instances on one VPS. For remote access use SSH tunnel, Tailscale, or a TLS reverse proxy — never drop the `127.0.0.1` prefix.
+All three are bound to `127.0.0.1`. For remote access, use an SSH tunnel, Tailscale or a TLS reverse proxy. Never drop the `127.0.0.1` prefix.
 
-## Lite mode (`npx`)
-
-Lite mode runs only the MCP verb server against a Beeper Desktop you already run locally — no Docker, no Electron, no Xvfb. It's the same single file the container runs, so the tool surface and `serverInfo.version` are identical by construction.
-
-**Prereqs:** Beeper Desktop running locally, with the Developer API enabled — **Settings → Developers** → enable the API and create an access token (the same token the container uses).
-
-**Run it:**
+### Lite
 
 ```sh
-BEEPER_TOKEN=your-token-here npx beeperbox
+BEEPER_TOKEN=abc123... npx beeperbox          # HTTP on 127.0.0.1:23375
+BEEPER_TOKEN=abc123... npx beeperbox --stdio  # stdio
 ```
 
-MCP HTTP server comes up on `http://127.0.0.1:23375`, pointed at the local Beeper API on `http://127.0.0.1:23373`. On boot it logs a one-line reachability verdict so a bad token or unreachable API is obvious immediately:
-
-```
-[beeperbox-mcp] preflight OK: http://127.0.0.1:23373 reachable, token accepted, 4 account(s)
-```
-
-For stdio transport (Claude Code, Cursor, Cline, Continue, bareagent), add `--stdio`:
-
-```sh
-BEEPER_TOKEN=your-token-here npx beeperbox --stdio
-```
-
-**Env contract:**
-
-| Env | Meaning | Default |
-|---|---|---|
-| `BEEPER_API` | Local Beeper Desktop API base | `http://127.0.0.1:23373` |
-| `BEEPER_TOKEN` | Beeper dev token (Settings → Developers) | — (required) |
-| `MCP_PORT` | MCP HTTP port | `23375` |
-| `MCP_AUTH_TOKEN` | Optional bearer guard on the MCP endpoint | unset (open on loopback) |
-| `MCP_ALLOWED_HOSTS` | Host/Origin allowlist | `localhost,127.0.0.1,::1` |
-| `MCP_BIND_ADDR` | Interface the MCP server binds | `127.0.0.1` (loopback) |
-
-**Security:** lite mode binds **loopback only** (`127.0.0.1`) by default, so it's safe with no auth — only processes on your machine (your agent, Claude Code) can reach it. Do **not** just flip it to `0.0.0.0`: a same-network attacker can spoof the `Host` header past the allowlist and reach the full tool surface (read every message, send across every network) unauthenticated. To expose it deliberately, set `MCP_BIND_ADDR=0.0.0.0` **and** `MCP_AUTH_TOKEN`, and front it with a tunnel (SSH / Tailscale / TLS reverse proxy) — never raw on a public interface. (The container binds `0.0.0.0` on purpose because Docker publishes it on `127.0.0.1` — that loopback *publish* is its boundary; lite mode has no such layer, which is why its *bind* is loopback.)
-
-**Supervision:** no Docker restart policy here — for an always-on lite setup, run it under `systemd` or `pm2`.
-
-**What lite mode is *not*:** it does not bundle or headless-run Beeper (that's the container's job). No new verbs, no transport changes — it's the same server, packaged and safe to run standalone.
-
-## The MCP
-
-Not a thin proxy over Beeper's raw API — an **opinionated 12-tool verb layer** built for an LLM to drive. Every tool returns one normalized `Chat` / `Message` schema (so the agent never learns a second shape), propagates `chat_id` + `network` onto every message (no second lookup to know where a hit came from), and is documented in-schema for the model. Reach across all 50+ networks; the agent never knows which bridge it's talking to.
-
-**Read / triage**
-
-| Tool | What it does |
-|---|---|
-| `list_accounts` | Which networks are connected (WhatsApp, Telegram, Discord …) — slug + label + connection `status` + display name |
-| `list_inbox` | Most recently active chats, with unread counts and last-activity time |
-| `list_unread` | The "what needs me right now?" view — only chats with `unread_count > 0` |
-| `get_chat` | One chat's current metadata by ID |
-| `read_chat` | Recent messages of a chat, chronological, normalized |
-| `search_messages` | Full-text search across every chat |
-
-**Write / act**
-
-| Tool | What it does |
-|---|---|
-| `send_message` | The headline write — reply or initiate; markdown, `reply_to_message_id`, returns the new message ID |
-| `note_to_self` | The agent's private command/control channel — recorded, excluded from every inbox view |
-| `react_to_message` | Lightest "I saw it" — a unicode emoji, visible to the sender on every network |
-| `archive_chat` | The "done with this conversation" primitive (Beeper exposes no mark-as-read) |
-
-**Watch / reach** — the last two releases
-
-| Tool | What it does |
-|---|---|
-| `poll_messages` | Read-only **watch primitive**: "what arrived since this cursor?" Seed once, persist the opaque cursor, poll with zero side effects. The cursor is **restart-safe** — survives a container/process restart with no missed or duplicated messages. Each message carries a `source` field (`"api"` for beeperbox's own sends, `"external"` otherwise) so a poll loop never answers itself. *(v0.6.0)* |
-| `download_asset` | The MCP-only way to reach attachment **bytes** (base64). Every `Message` now carries `attachments[]` (`{type, file_name, mime_type, src_url, size, is_voice_note}`); fetch by `src_url` or by `chat_id`+`message_id`. Byte-capped and timeout-bounded; a defense-in-depth guard refuses `file://` paths outside Beeper's media cache. *(v0.7.0)* |
-
-Reliable echo-suppression (`source` + the optional `client_tag` idempotency tag) means an agent on a poll loop can send *and* watch the same chat without mistaking its own messages for inbound — the wiring that lets [multis](https://github.com/hamr0/multis) drop its text-prefix hacks.
-
-### Webhook (opt-in, experimental)
-
-Don't want to poll? Set `BEEPERBOX_WEBHOOK_URL` and beeperbox POSTs a small **ping** when new messages arrive (off by default; the 12 tools are unchanged). It runs an internal `poll_messages` loop with its own persisted cursor, so a restart resumes where it left off. Limit: if the receiver is unreachable while more than 100 new messages arrive in one chat, the older ones can be skipped; the ping flags that chat with `possible_gap: true` and logs a warning, so catch up with `read_chat`.
+On boot it logs one line, so a bad token or an unreachable API shows up right away: `preflight OK: http://127.0.0.1:23373 reachable, token accepted, 4 account(s)`.
 
 | Env | Default | |
 |---|---|---|
-| `BEEPERBOX_WEBHOOK_URL` | unset (off) | `https://…`, or `http://` to `127.0.0.1` / `::1` / `localhost` only (not other 127.x or `localhost.`); no `user:pass@` credentials |
-| `BEEPERBOX_WEBHOOK_SECRET` | — | `whsec_<base64>` Standard Webhooks key (≥16 bytes, canonical base64); required unless the host is loopback |
-| `BEEPERBOX_WEBHOOK_INTERVAL_MS` | `10000` | floor `1000` |
-| `BEEPERBOX_WEBHOOK_MODE` | `ping` | `ping` = ids/counts only; `full` adds the normalized `messages` (falls back to the ping shape, `messages_omitted: true`, when a batch would exceed 64 KiB) |
-| `BEEPERBOX_WEBHOOK_STATE` | next to the sent-ledger | cursor + in-flight batch file |
+| `BEEPER_TOKEN` | — | required |
+| `BEEPER_API` | `http://127.0.0.1:23373` | your Beeper Desktop API |
+| `MCP_PORT` | `23375` | |
+| `MCP_BIND_ADDR` | `127.0.0.1` | see the warning below |
+| `MCP_AUTH_TOKEN` | unset | bearer guard on the MCP endpoint |
+| `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Host/Origin allowlist |
 
-Payload (one POST per batch, `source:"api"` sends excluded): `{"type":"messages.new","timestamp":…,"data":{"chats":[{chat_id,network,count,latest_at,message_ids}]}}`. Delivery is **at-least-once** — the cursor advances only on a 2xx, failures retry with backoff under the same `webhook-id` — so dedupe by message id. Signed with `webhook-id` / `webhook-timestamp` / `webhook-signature` (HMAC-SHA256). Redirects are not followed; a bad config exits at startup.
+Lite mode binds loopback on purpose. Do **not** just set `MCP_BIND_ADDR=0.0.0.0`: anyone on your network could then spoof the `Host` header, read every message and send on every network. To expose it, also set `MCP_AUTH_TOKEN` and put a tunnel in front. (The container binds `0.0.0.0` safely because Docker publishes the port only on `127.0.0.1`.)
+
+### Connect a client
+
+```sh
+curl -X POST http://localhost:23375 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+For stdio from the container, use `docker exec -i beeperbox node /opt/mcp/server.js --stdio`. It works with Claude Code, Cursor, Cline, Continue, [bareagent](https://github.com/hamr0/bareagent) or any other MCP client.
+
+## The MCP
+
+This is not a thin proxy over Beeper's API. It is 12 verbs built for an LLM to use. Every tool returns the same normalized `Chat` / `Message` schema, and every message includes its `chat_id` and `network`.
+
+| | Tool | What it does |
+|---|---|---|
+| **read** | `list_accounts` | connected networks, with connection `status` |
+| | `list_inbox` | most recently active chats, with unread counts |
+| | `list_unread` | only chats with `unread_count > 0` |
+| | `get_chat` | one chat's metadata |
+| | `read_chat` | a chat's recent messages, oldest first |
+| | `search_messages` | full-text search across every chat |
+| | `download_asset` | an attachment's bytes (base64), by `src_url` or `chat_id` + `message_id` |
+| **write** | `send_message` | reply or start a chat; markdown, `reply_to_message_id`, optional `client_tag` |
+| | `note_to_self` | the agent's private command channel, hidden from inbox views |
+| | `react_to_message` | an emoji reaction, visible on every network |
+| | `archive_chat` | marks a chat done (Beeper has no mark-as-read) |
+| **watch** | `poll_messages` | new messages since a cursor; restart-safe, no side effects, reports `gaps` |
+| **push** | webhook *(opt-in, experimental)* | beeperbox POSTs to you when messages arrive, so you don't have to poll |
+
+Each message has a `source` field: `"api"` for messages beeperbox sent, `"external"` for everything else. An agent that both sends and watches a chat can use it to skip its own messages.
+
+**Webhook.** It is off by default and doesn't change the 12 tools. When you set `BEEPERBOX_WEBHOOK_URL`, beeperbox runs its own `poll_messages` loop and saves its cursor, so it picks up where it left off after a restart. Each batch is sent as one signed Standard Webhooks POST. Delivery is at-least-once, so dedupe by message id. `ping` sends message ids and counts; `full` also sends the messages, up to 64 KiB per batch. If the receiver is down while more than 100 messages arrive in one chat, older ones can be skipped. That chat is then marked `possible_gap: true`; use `read_chat` to catch up.
+
+```sh
+BEEPERBOX_WEBHOOK_URL=https://bot.example/hook   # https, or http to loopback only
+BEEPERBOX_WEBHOOK_SECRET=whsec_...               # required unless loopback
+BEEPERBOX_WEBHOOK_MODE=ping                      # or full
+BEEPERBOX_WEBHOOK_INTERVAL_MS=10000              # floor 1000
+```
+
+The full contract (payload, headers, state file, retries) is in [GUIDE.md → Webhook](docs/GUIDE.md#webhook-opt-in-experimental).
 
 ## Build from source
 
@@ -183,7 +127,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 - [**docs/GUIDE.md**](docs/GUIDE.md) — human walkthrough: first-run login, multi-instance VPS pattern, read-only vs read-write tokens, troubleshooting
 - [**beeperbox.context.md**](beeperbox.context.md) — drop-in integration guide for AI assistants: MCP tools, schemas, wiring snippets for Claude Code / Cursor / Cline / bareagent, error codes
-- [**CHANGELOG.md**](CHANGELOG.md) — version history and [versioning policy](CHANGELOG.md#versioning). tl;dr **MINOR** = new runtime behavior (new MCP tool, new architecture, new transport), **PATCH** = bug fixes + packaging + docs. `MAJOR` held at `0` until the MCP tool set and HTTP API are declared stable.
+- [Beeper Desktop](https://www.beeper.com/) — upstream app this containerizes
+- [Beeper Desktop API](https://developers.beeper.com/) — official API reference
+- [multis](https://github.com/hamr0/multis) — personal-assistant project that drove beeperbox's extraction
 
 ## bare suite
 
@@ -196,10 +142,3 @@ Pairs well with [bareguard](https://github.com/hamr0/bareguard) (ask before anyt
 ## License
 
 [Apache-2.0](LICENSE). Independent wrapper around Beeper Desktop, no affiliation with Beeper / Automattic.
-
-## Related
-
-- [Beeper Desktop](https://www.beeper.com/) — upstream app this containerizes
-- [Beeper Desktop API](https://developers.beeper.com/) — official API reference
-- [bareagent](https://github.com/hamr0/bareagent) — lightweight agent orchestration that consumes beeperbox via MCP
-- [multis](https://github.com/hamr0/multis) — personal-assistant project that drove beeperbox's extraction
