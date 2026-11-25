@@ -914,6 +914,18 @@ test('webhook retry: 500 then 200 reuses the same webhook-id, holds the cursor, 
   assert.ok(h.saves[0].pending);
 });
 
+test('webhook: two separate batches carry different webhook-ids', async () => {
+  const h = whHarness({ polls: [
+    { cursor: 'C1', messages: [wm('a', 'c1', 't')] },
+    { cursor: 'C2', messages: [wm('b', 'c1', 't')] },
+  ] });
+  const st = { cursor: 'C0', pending: null, failures: 0 };
+  await S.webhookTick(st, h.deps);
+  await S.webhookTick(st, h.deps);
+  assert.equal(h.posts.length, 2);
+  assert.notEqual(h.posts[0].id, h.posts[1].id);
+});
+
 test('webhook backoff is capped at 300000ms', async () => {
   const h = whHarness({ statuses: [500] });
   const st = { cursor: 'C0', pending: { id: 'msg_x', body: '{}', next_cursor: 'C1' }, failures: 30 };
