@@ -106,7 +106,7 @@ jobs:
           fi
           v="$(bash scripts/promoted-beeper-version.sh "$IMAGE" --floor "$pinned")"
           if [ "$v" = "$pinned" ]; then
-            src="pinned: no promoted version above the pin"
+            src="pin $pinned; no newer promoted version"
           else
             src="promoted: newest that passed gates; pin $pinned"
           fi
